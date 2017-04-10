@@ -2,30 +2,33 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import skipIf
 
 from polymr.record import Record
-import polymr.storage
+import polymr_postgres
+
+ENVVAR = "POLYMR_POSTGRES_URL"
+URL = os.environ.get(ENVVAR, False)
+should_skip_test = not bool(URL)
 
 
-class TestLevelDBBackend(unittest.TestCase):
-
+class TestPostgresBackend(unittest.TestCase):
     def setUp(self):
-        self.workdir = tempfile.mkdtemp(suffix="polymrtest")
-        self.db = None
+        self.db = polymr_postgres.PostgresBackend(URL)
 
     def tearDown(self):
-        if os.path.exists(self.workdir):
-            shutil.rmtree(self.workdir)
+        self.db.destroy()
+        self.db.close()
 
     def _get_db(self, new=False):
         if self.db and not new:
             return self.db
         if self.db:
             self.db.close()
-        self.db = polymr.storage.parse_url(
-            "leveldb://localhost"+self.workdir)
+        self.db = polymr_postgres.PostgresBackend(URL)
         return self.db
 
+    @skipIf(should_skip_test, ENVVAR+" not defined")
     def test_get_set_freqs(self):
         db = self._get_db()
         x = {b"abc": 3, b"bcd": 2}
@@ -33,13 +36,17 @@ class TestLevelDBBackend(unittest.TestCase):
         y = db.get_freqs()
         self.assertEqual(x, dict(y))
 
+    @skipIf(should_skip_test, ENVVAR+" not defined")
     def test_get_set_rowcount(self):
         db = self._get_db()
-        x = 222
-        db.save_rowcount(x)
+        self.assertEqual(db.get_rowcount(), 0)
         y = db.get_rowcount()
-        self.assertEqual(x, y)
+        r1 = Record(["abcde", "foo"], "1", ['dogsays'])
+        r2 = Record(["qwert", "bar"], "2", ['barque'])
+        db.save_records(enumerate((r1, r2)))
+        self.assertEqual(db.get_rowcount(), 2)
 
+    @skipIf(should_skip_test, ENVVAR+" not defined")
     def test_get_set_token(self):
         db = self._get_db()
         tok = b"abc"
@@ -54,12 +61,13 @@ class TestLevelDBBackend(unittest.TestCase):
         self.assertNotEqual(records_cmpct, rng)
         self.assertEqual(rng, list(range(1,8)))
 
+    @skipIf(should_skip_test, ENVVAR+" not defined")
     def test_get_set_records(self):
         db = self._get_db()
         r1 = Record(["abcde", "foo"], "1", ['dogsays'])
         r2 = Record(["qwert", "bar"], "2", ['barque'])
-        cnt = db.save_records(enumerate((r1, r2)))
-        self.assertEqual(cnt, 2)
+        db.save_records(enumerate((r1, r2)))
+        self.assertEqual(db.get_rowcount(), 2)
         r1_db, r2_db = list(db.get_records([0, 1]))
         self.assertEqual(r1.fields, r1_db.fields)
         self.assertEqual(r1.pk, r1_db.pk)

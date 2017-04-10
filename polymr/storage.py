@@ -9,7 +9,7 @@ import leveldb
 import msgpack
 
 from .record import Record
-
+from .util import merge_to_range
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,27 @@ def loads(bs):
 
 def dumps(obj):
     return msgpack.packb(obj)
+
+
+def copy(backend_from, backend_to):
+    logger.debug("Copying from %s to %s", backend_from, backend_to)
+    cnt = backend_from.get_rowcount()
+    recs = backend_from.get_records(range(0, cnt))
+    logger.info("Copying %i records", cnt)
+    backend_to.save_records(enumerate(recs))
+    logger.info("Copying frequencies")
+    freqs = backend_from.get_freqs()
+    backend_to.save_freqs(freqs)
+    logger.info("Copying featurizer name")
+    backend_to.save_featurizer_name(backend_from.get_featurizer_name())
+    logger.info("Copying features name")
+    for i, tok in enumerate(freqs):
+        idxs = backend_from.get_token(tok)
+        rngs, compacted = merge_to_range([idxs])
+        backend_to.save_token(tok, rngs, compacted)
+        if logger.isEnabledFor(logging.INFO) and i % (len(freqs) / 100) == 0:
+            logging.info("Feature copy %.2f%% complete", i / len(freqs) * 100)
+    logger.info("Copy complete")
 
 
 class AbstractBackend(metaclass=ABCMeta):
@@ -140,17 +161,20 @@ class LevelDBBackend(AbstractBackend):
         self.featurizer_name = featurizer_name
         if not self.featurizer_name:
             try:
-                name = self.get_featurizer_name(self.path)
+                name = self.get_featurizer_name()
             except:
                 name = 'default'
             self.featurizer_name = name
         self._check_dbstats()
 
-    @staticmethod
-    def get_featurizer_name(path):
-        with open(os.path.join(path, "featurizer")) as f:
+    def get_featurizer_name(self):
+        with open(os.path.join(self.path, "featurizer")) as f:
             name = f.read()
         return name
+
+    def save_featurizer_name(self, name):
+        with open(os.path.join(self.path, "featurizer"), 'w') as f:
+            f.write(name)
 
     def _check_dbstats(self):
         try:
@@ -161,8 +185,10 @@ class LevelDBBackend(AbstractBackend):
             self.get_rowcount()
         except KeyError:
             self.save_rowcount(0)
-        with open(os.path.join(self.path, "featurizer"), 'w') as f:
-            f.write(self.featurizer_name)
+        try:
+            self.get_featurizer_name()
+        except OSError:
+            self.save_featurizer_name('default')
 
     @classmethod
     def from_urlparsed(cls, parsed):
@@ -217,6 +243,7 @@ class LevelDBBackend(AbstractBackend):
     def _get_record(blob):
         rec = loads(blob)
         rec[0] = list(map(bytes.decode, rec[0]))
+        rec[1] = rec[1].decode()
         return Record._make(rec)
 
     def _load_record_blob(self, idx):

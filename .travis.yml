@@ -1,10 +1,19 @@
 language: python
+dist: trusty
 python:
   - 3.5
+services:
+  - postgreql
+addons:
+  postgresql: "9.6"
+before_script:
+  - psql -c 'create database travis_ci_test;' -U postgres
 install:
   - python setup.py install
+  - bash -c 'cd postgres && python setup.py install'
 script:
   - python setup.py test
+  - bash -c 'cd postgres && POLYMR_POSTGRES_URL="pq://postgres@localhost/travis_ci_test" python setup.py test'
 env:
   global:
      - secure: QZtymZcUngh+oB8FgRRn3Zbi2kyqEFAfZik2t080/cKSU7iV9SjyCT9BfvotjCEDkGDtLU4yWMrnzhoPRI6Dqomn+BxK6CCYsUkeA/qcZeUA4rjdGKdXeDKh91cMsh725odKj76YQNWv1fvYiLEbiKcw4Rlzx/gxqizpOVlo+zxIqj5W3BCTukrXjIe53hypwrH5wuX5F6cEQk2/rvF0Gykx7vXbE4YhipoG0ws2KZ/KDrkIyy9in67lnQtMVN97Etj/Hz9CpFSvjCRfiIXVVi/K0UdlUQQfrPHzb/30qNi2Y1jKJCBid29NfCPx4fScxXZnKMhPeOq/j6YDHRroWcw+ppa8bFjXXWNXjYCNgxJZYSJhSxudIXMmNb48KLtvN6hVwQPAWAi5qohpHZ3DAaDu2QYCD2ErqtSttJfYrUge3q5x2pwtxSXSB8XhFqFs6B1mrmrxE/Emp5zkBb+h1qKeQuuH7gdYu7isOBTwNVwfJSt+it0lPsaJFx3UhF49wV5BmxCxtmYQC6ZZykjGwWQmEDEFO/2WYtOlgccJcLzXxzknUpi8M4LPp+mijRQmNtVmZiCf1yexL9Ebl8WhTToj4Cg54f5UbuG5HCplSFrDCHAAJHzZgHORnKE23TloALyhsrkHERJRqZ4SjMjsiIwaET34Nojc1TlN2fyov9yU=

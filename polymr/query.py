@@ -219,7 +219,7 @@ class Index(object):
     def search(self, query, limit=defaults.limit, k=defaults.k, n=defaults.n):
         record_ids = self._search(query, k, n)
         scores_records = self._scored_records(record_ids, query)
-        return [{"fields": rec.fields, "pk": rec.pk.decode(), "score": s,
+        return [{"fields": rec.fields, "pk": rec.pk, "score": s,
                  "data": rec.data}
                 for s, rec in nsmallest(limit, scores_records, key=first)]
 
