@@ -1,11 +1,7 @@
 from heapq import merge as _merge
 
-KMER_SIZE=3
-STEP_SIZE=1
-
-
-def get(keys, idxable):
-    return [idxable[k] for k in keys]
+KMER_SIZE = 3
+STEP_SIZE = 1
 
 
 def avg(l):
@@ -22,7 +18,7 @@ def jaccard(a, b):
     if not a and not b:
         return 0
     n = len(a.intersection(b))
-    return 1 - ( float(n) / (len(a) + len(b) - n) )
+    return 1 - (float(n) / (len(a) + len(b) - n))
 
 
 def openfile(filename_or_handle, mode='r'):
@@ -32,7 +28,7 @@ def openfile(filename_or_handle, mode='r'):
 
 
 def merge_to_range(ls):
-    if len(ls) == 1:
+    if hasattr(ls, "__len__") and len(ls) == 1:
         merged = iter(ls[0])
     else:
         merged = _merge(*ls)
@@ -50,5 +46,3 @@ def merge_to_range(ls):
             ret.append(x)
         prev = x
     return ret, compacted
-            
-

@@ -1,3 +1,4 @@
+import sys
 import argparse
 
 from .index import CLI as indexcli
@@ -6,7 +7,8 @@ from .query import Index
 
 subcommands = [indexcli, querycli]
 
-Index # pyflakes
+Index  # pyflakes
+
 
 def cli():
     parser = argparse.ArgumentParser()
@@ -17,6 +19,9 @@ def cli():
             sp.add_argument(*args, **kwargs)
         sp.set_defaults(func=c.hook)
     args = parser.parse_args()
+    if not hasattr(args, 'func'):
+        parser.print_usage()
+        sys.exit()
     return args.func(parser, args)
 
 

@@ -7,6 +7,7 @@ from io import StringIO
 import polymr.index
 import polymr.storage
 import polymr.query
+import polymr.record
 
 to_index = StringIO("""01001,MA,DONNA,AGAWAM,WUCHERT,PO BOX 329,9799PNOVAY
 01007,MA,BERONE,BELCHERTOWN,BOARDWAY,135 FEDERAL ST,9799JA8CB5
@@ -20,8 +21,7 @@ to_index = StringIO("""01001,MA,DONNA,AGAWAM,WUCHERT,PO BOX 329,9799PNOVAY
 01040,MA,MARIE,HOLYOKE,KANJAMIE,582 PLEASANT ST,98984OB8OT
 """)
 
-sample_query = ["01030","MA","MELANI","FEEDING HILLS",
-                "PICKETT","18 PAUL REVERE DR"]
+sample_query = ["01030","MELANI","PICKETT","18 PAUL REVERE DR"]
 sample_pk = "989960D48D"
 
 
@@ -40,12 +40,20 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_end_to_end(self):
         feats_json = StringIO()
-        polymr.index.extract_features(to_index, 1, 10, feats_json)
-        feats_json.seek(0)
-        polymr.index.unpack(feats_json, self.db)
-        polymr.index.organize(self.db)
+        recs = polymr.record.from_csv(
+            to_index,
+            searched_fields_idxs=[0,2,4,5],
+            pk_field_idx=-1,
+            include_data=False
+        )
+        polymr.index.extract_features(recs, 1, 10, self.db)
         to_index.seek(0)
-        polymr.index.records(to_index, self.db)
+        recs = polymr.record.from_csv(
+            to_index,
+            searched_fields_idxs=[0,2,4,5],
+            pk_field_idx=-1
+        )
+        polymr.index.records(recs, self.db)
 
         index = polymr.query.Index(self.db)
         hit = index.search(sample_query, limit=1)[0]

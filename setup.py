@@ -2,7 +2,8 @@ from setuptools import setup
 
 requires = [
     "leveldb",
-    "toolz"
+    "toolz",
+    "msgpack-python"
 ]
 
 setup(

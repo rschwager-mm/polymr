@@ -1,19 +1,25 @@
 import os
-import json
+import logging
+from collections import defaultdict
 from abc import ABCMeta
 from abc import abstractmethod
 from urllib.parse import urlparse
 
 import leveldb
+import msgpack
 
 from .record import Record
 
 
+logger = logging.getLogger(__name__)
+
+
 def loads(bs):
-    return json.loads(bs.decode())
+    return msgpack.unpackb(bs)
+
 
 def dumps(obj):
-    return json.dumps(obj).encode()
+    return msgpack.packb(obj)
 
 
 class AbstractBackend(metaclass=ABCMeta):
@@ -22,11 +28,9 @@ class AbstractBackend(metaclass=ABCMeta):
     def from_urlparsed(cls, parsed):
         ...
 
-
     @abstractmethod
     def close(self):
         ...
-
 
     @abstractmethod
     def get_freqs(self):
@@ -39,7 +43,6 @@ class AbstractBackend(metaclass=ABCMeta):
         """
         ...
 
-
     @abstractmethod
     def save_freqs(self, d):
         """Save the frequency dict.
@@ -50,30 +53,27 @@ class AbstractBackend(metaclass=ABCMeta):
         """
         ...
 
-
     @abstractmethod
     def get_rowcount(self):
         """Get the number of records indexed
-        
+
         :rtype: int
         """
         ...
 
-
     @abstractmethod
     def save_rowcount(self, cnt):
         """Save the number of records indexed
-        
+
         :param cnt: The row count to save
         :type cnt: int
         """
         ...
 
-
     @abstractmethod
     def get_token(self, name):
         """Get the list of records containing the named token
-        
+
         :param name: The token to get
         :type name: str
 
@@ -82,7 +82,6 @@ class AbstractBackend(metaclass=ABCMeta):
 
         """
         ...
-
 
     @abstractmethod
     def save_token(self, name, record_ids, compacted):
@@ -104,74 +103,6 @@ class AbstractBackend(metaclass=ABCMeta):
         """
         ...
 
-
-    @abstractmethod
-    def get_tokprefix(self, name):
-        """Get all tokens and record lists saved with the prefix ``name +"_"``
-        This is used when merging record lists across multiple feature
-        tables into a single record list.
-
-        :param name: The token to get
-        :type name: str
-
-        :returns: The list of suffixed tokens and the list of record lists
-        :rtype: (list of str, list of ints)
-
-        """
-
-        ...
-
-
-    @abstractmethod
-    def save_tokprefix(self, toks_idxs_rngs):
-        """Save token and record ranges for merging feature tables.
-
-        :param toks_idxs_rngs: The token, table number, and record
-          lists from the feature table to save
-        :type toks_idxs_rngs: Iterable of (str, int, list-of-int)
-          tuples.
-
-        """
-        ...
-
-
-    @abstractmethod
-    def delete_tokprefix(self, name):
-        """Delete all tokens and record lists saved with the prefix ``name
-        +"_"``. This is used when merging record lists across multiple
-        feature tables into a single record list.
-
-        :param name: The token to delete
-        :type name: str
-
-        :returns: The number of token chunks deleted
-        :rtype: int
-
-        """
-        ...
-
-
-    @abstractmethod
-    def get_toklist(self):
-        """Get the list of all tokens saved in the backend
-
-        :rtype: list of str
-
-        """
-        ...
-
-
-    @abstractmethod
-    def save_toklist(self, toks):
-        """Save the list of all tokens saved in the backend
-        
-        :param toks: The list of all tokens
-        :type toks: list of str
-
-        """
-        ...
-
-
     @abstractmethod
     def get_records(self, idxs):
         """Get records by record id
@@ -182,10 +113,9 @@ class AbstractBackend(metaclass=ABCMeta):
         """
         ...
 
-
     @abstractmethod
     def save_records(self, idx_recs):
-        """Save records. 
+        """Save records.
 
         :param idx_recs: The record id, record pairs to save
         :type idx_recs: iterable of (int, record) pairs.
@@ -196,20 +126,47 @@ class AbstractBackend(metaclass=ABCMeta):
         ...
 
 
-
 class LevelDBBackend(AbstractBackend):
-    def __init__(self, path, create_if_missing=True):
-        c = create_if_missing
-        self.feature_db = leveldb.LevelDB(os.path.join(path, "features"),
-                                          create_if_missing=c)
-        self.record_db = leveldb.LevelDB(os.path.join(path, "records"),
-                                         create_if_missing=c)
+    def __init__(self, path, create_if_missing=True,
+                 featurizer_name='default'):
+        self.path = path
+        if create_if_missing and not os.path.exists(path):
+            os.mkdir(path)
 
+        self.feature_db = leveldb.LevelDB(os.path.join(path, "features"),
+                                          create_if_missing=create_if_missing)
+        self.record_db = leveldb.LevelDB(os.path.join(path, "records"),
+                                         create_if_missing=create_if_missing)
+        self.featurizer_name = featurizer_name
+        if not self.featurizer_name:
+            try:
+                name = self.get_featurizer_name(self.path)
+            except:
+                name = 'default'
+            self.featurizer_name = name
+        self._check_dbstats()
+
+    @staticmethod
+    def get_featurizer_name(path):
+        with open(os.path.join(path, "featurizer")) as f:
+            name = f.read()
+        return name
+
+    def _check_dbstats(self):
+        try:
+            self.get_freqs()
+        except KeyError:
+            self.save_freqs({})
+        try:
+            self.get_rowcount()
+        except KeyError:
+            self.save_rowcount(0)
+        with open(os.path.join(self.path, "featurizer"), 'w') as f:
+            f.write(self.featurizer_name)
 
     @classmethod
     def from_urlparsed(cls, parsed):
         return cls(parsed.path)
-
 
     def close(self):
         del self.feature_db
@@ -217,95 +174,69 @@ class LevelDBBackend(AbstractBackend):
         del self.record_db
         self.record_db = None
 
-
     def get_freqs(self):
         s = self.feature_db.Get("Freqs".encode())
-        return loads(s)
-
+        return defaultdict(int, loads(s))
 
     def save_freqs(self, freqs_dict):
         self.feature_db.Put("Freqs".encode(), dumps(freqs_dict))
 
-
     def get_rowcount(self):
-        return loads( self.record_db.Get("Rowcount".encode()) )
-
+        return loads(self.record_db.Get("Rowcount".encode()))
 
     def save_rowcount(self, cnt):
         self.record_db.Put("Rowcount".encode(), dumps(cnt))
 
-
-    def get_token(self, name):
-        ret = loads(self.feature_db.Get(name.encode()))
-        if ret['compacted'] is False:
-            return ret['idxs']
+    @staticmethod
+    def _get_token(blob):
+        ret = loads(blob)
+        if ret[b'compacted'] is False:
+            return ret[b'idxs']
         idxs = []
-        for idx in ret['idxs']:
+        for idx in ret[b'idxs']:
             if type(idx) is list:
                 idxs.extend(list(range(idx[0], idx[1]+1)))
             else:
                 idxs.append(idx)
         return idxs
 
+    def _load_token_blob(self, name):
+        return self.feature_db.Get(name)
+
+    def get_token(self, name):
+        blob = self._load_token_blob(name)
+        return self._get_token(blob)
 
     def save_token(self, name, record_ids, compacted):
         self.feature_db.Put(
-            name.encode(),
-            dumps({"idxs": record_ids, "compacted": compacted})
+            name,
+            dumps({b"idxs": record_ids, b"compacted": compacted})
         )
 
+    @staticmethod
+    def _get_record(blob):
+        rec = loads(blob)
+        rec[0] = list(map(bytes.decode, rec[0]))
+        return Record._make(rec)
 
-    def get_tokprefix(self, name):
-        keys, rngs = [], []
-        for k, v in self.feature_db.RangeIter((name+"_").encode(), None):
-            key = k.decode()
-            if not key.startswith(name+"_"):
-                break
-            keys.append(key)
-            rngs.append(loads(v))
-        return keys, rngs
+    def _load_record_blob(self, idx):
+        return self.record_db.Get(str(idx).encode())
 
-
-    def save_tokprefix(self, toks_idxs_rngs):
-        for tok, idx, rng in toks_idxs_rngs:
-            self.feature_db.Put(
-                "{}_{}".format(tok, idx).encode(),
-                dumps(rng)
-            )
-
-
-    def delete_tokprefix(self, name):
-        cnt = 0
-        for k, v in self.feature_db.RangeIter((name+"_").encode(), None):
-            key = k.decode()
-            if not key.startswith(name+"_"):
-                break
-            self.feature_db.Delete(k)
-            cnt += 1
-        return cnt
-
-
-    def get_toklist(self):
-        return loads(self.feature_db.Get("Tokens".encode()))
-
-
-    def save_toklist(self, toks):
-        self.feature_db.Put("Tokens".encode(), dumps(toks))
-
-        
     def get_records(self, idxs):
         for idx in idxs:
-            d = loads(self.record_db.Get(str(idx).encode()))
-            yield Record(**d)
+            blob = self._load_record_blob(idx)
+            yield self._get_record(blob)
 
-
-    def save_records(self, idx_recs):
+    def save_records(self, idx_recs, record_db=None):
         for cnt, (idx, rec) in enumerate(idx_recs):
             self.record_db.Put(
                 str(idx).encode(),
-                dumps(rec._asdict())
+                dumps(rec)
             )
         return cnt+1
+
+    def delete_record(self, idx):
+        self.record_db.Delete(str(idx).encode())
 
 
 backends = {"leveldb": LevelDBBackend}
