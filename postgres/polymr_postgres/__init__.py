@@ -1,11 +1,13 @@
 import operator
 from collections import defaultdict
 from itertools import chain
+from itertools import repeat
 from urllib.parse import urlunparse
 
 from toolz import partition_all
 import postgresql
 
+import polymr.storage
 from polymr.record import Record
 from polymr.storage import loads
 from polymr.storage import dumps
@@ -23,7 +25,7 @@ class PostgresBackend(AbstractBackend):
             self._conn = postgresql.open(url)
         else:
             self._conn = url_or_connection
-        if create_if_missing:
+        if create_if_missing is True and not self.exists():
             self.create()
         self.featurizer_name = featurizer_name
         if not self.featurizer_name:
@@ -34,18 +36,25 @@ class PostgresBackend(AbstractBackend):
             self.featurizer_name = name
         self._check_dbstats()
 
+    def exists(self):
+        try:
+            self._conn.query.first("SELECT value FROM polymr_settings")
+        except:
+            return False
+        return True
+
     def create(self):
         self._create_settings()
         self._create_records()
         self._create_features()
-        self._create_frequencies()
+        self._create_feature_record_map()
 
     def _create_settings(self):
         self._conn.execute(
             'CREATE TABLE IF NOT EXISTS polymr_settings ('
             ' name varchar(40) PRIMARY KEY,'
             ' value varchar(256),'
-            ' CONSTRAINT con1 UNIQUE(name)'
+            ' CONSTRAINT polymr_settings_uniq_name UNIQUE(name)'
             ');'
         )
 
@@ -62,36 +71,37 @@ class PostgresBackend(AbstractBackend):
         self._conn.execute("ALTER SEQUENCE polymr_records_id_seq"
                            " RESTART WITH 0")
 
-    def _create_features(self, index=True):
+    def _create_features(self):
         self._conn.execute(
             'CREATE TABLE IF NOT EXISTS polymr_features ('
+            ' id serial PRIMARY KEY,'
             ' tok bytea,'
-            ' id integer,'
-            ' to_ integer'
+            ' freq integer,'
+            ' CONSTRAINT polymr_feature_uniq_tok UNIQUE(tok)'
+            ');'
+        )
+
+    def _create_feature_record_map(self, index=True):
+        self._conn.execute(
+            'CREATE TABLE IF NOT EXISTS polymr_feature_record_map ('
+            ' id_tok integer,'
+            ' id_rec integer'
             ');'
         )
         if index is True:
-            self._create_feature_index()
+            self._create_feature_record_map_index()
 
-    def _create_feature_index(self):
+    def _create_feature_record_map_index(self):
         self._conn.execute(
-            'CREATE INDEX IF NOT EXISTS polymr_features_tokidx'
-            ' ON polymr_features USING btree (tok);'
-        )
-
-    def _create_frequencies(self):
-        self._conn.execute(
-            'CREATE TABLE IF NOT EXISTS polymr_frequencies ('
-            ' tok bytea,'
-            ' cnt integer'
-            ');'
+            'CREATE INDEX IF NOT EXISTS polymr_feature_record_map_idx'
+            ' ON polymr_feature_record_map USING btree (id_tok);'
         )
 
     def destroy(self):
         self._conn.execute('DROP TABLE polymr_settings')
         self._conn.execute('DROP TABLE polymr_records')
         self._conn.execute('DROP TABLE polymr_features')
-        self._conn.execute('DROP TABLE polymr_frequencies')
+        self._conn.execute('DROP TABLE polymr_feature_record_map')
 
     def get_featurizer_name(self):
         ress = self._conn.query("SELECT value FROM polymr_settings"
@@ -108,7 +118,7 @@ class PostgresBackend(AbstractBackend):
         stmt('featurizer', name)
 
     def _check_dbstats(self):
-        if not self.get_freqs():
+        if not self._has_freqs():
             self.save_freqs({})
         if not self.get_rowcount():
             self.save_rowcount(0)
@@ -118,65 +128,143 @@ class PostgresBackend(AbstractBackend):
             self.save_featurizer_name('default')
 
     @classmethod
-    def from_urlparsed(cls, parsed):
-        return cls(urlunparse(parsed))
+    def from_urlparsed(cls, parsed, featurizer_name='default'):
+        return cls(urlunparse(parsed), featurizer_name=featurizer_name)
 
     def close(self):
         self._conn.close()
 
+    def find_least_frequent_tokens(self, toks, k):
+        stmt = self._conn.prepare("SELECT tok, freq FROM polymr_features"
+                                  " WHERE tok = $1")
+        freqs = dict(filter(None, map(stmt.first, toks)))
+        return sorted(filter(freqs.__contains__, toks), 
+                      key=freqs.__getitem__)[:k]
+
+    def _has_freqs(self):
+        cnt = self._conn.query.first("SELECT COUNT(*) FROM polymr_features")
+        return cnt > 1
+
     def get_freqs(self):
-        stmt = self._conn.prepare('SELECT tok, cnt FROM polymr_frequencies')
+        stmt = self._conn.prepare('SELECT tok, freq FROM polymr_features')
         return defaultdict(int, cat(stmt.chunks()))
 
-    def save_freqs(self, freqs_dict):
-        self._conn.execute('TRUNCATE TABLE polymr_frequencies')
-        stmt = self._conn.prepare('INSERT INTO polymr_frequencies'
-                                  ' VALUES ($1, $2)')
-        chunks = partition_all(1000, freqs_dict.items())
+    def update_freqs(self, toks_cnts):
+        stmt = self._conn.prepare(
+            "INSERT INTO polymr_features VALUES (DEFAULT, $1, $2)"
+            " ON CONFLICT (tok) DO UPDATE SET freq = EXCLUDED.freq"
+        )
+        chunks = partition_all(1000, toks_cnts)
         with self._conn.xact():
             stmt.load_chunks(chunks)
 
+    def save_freqs(self, freqs_dict):
+        return self.update_freqs(freqs_dict.items())
+
     def get_rowcount(self):
-        ress = self._conn.query('SELECT COUNT(*) FROM polymr_records')
-        return ress[0][0]
+        return self._conn.query.first(
+            "SELECT reltuples FROM pg_class"
+            " WHERE oid = 'polymr_records'::regclass")
+
+    def increment_rowcount(self, cnt):
+        pass
 
     def save_rowcount(self, cnt):
         pass
 
     def get_token(self, name):
         stmt = self._conn.prepare(
-            'SELECT tok, id, to_ FROM polymr_features WHERE tok = $1'
+            'SELECT b.id_rec FROM polymr_features a'
+            ' LEFT JOIN polymr_feature_record_map b ON a.id = b.id_tok'
+            ' WHERE a.tok = $1'
         )
-        idxs = []
-        for tok, frm, to in cat(stmt.chunks(name)):
-            if to is None:
-                idxs.append(frm)
-            else:
-                idxs.extend(list(range(frm, to+1)))
-        return idxs
+        return list(cat(cat(stmt.chunks(name))))
 
-    def save_token(self, name, record_ids, compacted):
-        stmt = self._conn.prepare(
-            'INSERT INTO polymr_features VALUES ($1, $2, $3)'
+    def update_token(self, name, record_ids):
+        self.save_token(name, record_ids, False)
+
+    def drop_records_from_token(self, name, bad_record_ids):
+        delete = self._conn.prepare(
+            "DELETE FROM polymr_feature_record_map"
+            " WHERE id_tok in (SELECT id FROM polymr_features WHERE tok = $1)"
+            " AND id_rec = $2"
         )
         with self._conn.xact():
-            for record_id in record_ids:
-                if type(record_id) is list:
-                    stmt(name, record_id[0], record_id[1])
-                else:
-                    stmt(name, record_id, None)
+            delete.load_rows(zip(repeat(name), bad_record_ids))
 
-    def get_records(self, idxs):
+    def save_token(self, name, record_ids, compacted=False):
+        if compacted is False:
+            record_id_len = len(record_ids)
+        else:
+            record_id_len = sum(1 if type(i) is int else i[1] - i[0] + 1
+                                for i in record_ids)
+        tok_id = self._conn.prepare(
+            "INSERT INTO polymr_features AS a VALUES (DEFAULT, $1, $2)"
+            " ON CONFLICT (tok) DO UPDATE SET freq = a.freq + EXCLUDED.freq"
+            " RETURNING id"
+        ).first(name, record_id_len)
         stmt = self._conn.prepare(
+            'INSERT INTO polymr_feature_record_map VALUES ($1, $2)'
+        )
+        with self._conn.xact():
+            if compacted is False:
+                stmt.load_rows(zip(repeat(tok_id), record_ids))
+            else:
+                for record_id in record_ids:
+                    if type(record_id) is list:
+                        ids = range(record_id[0], record_id[1]+1)
+                        stmt.load_rows(zip(repeat(tok_id), ids))
+                    else:
+                        stmt(tok_id, record_id)
+
+    def save_tokens(self, names_ids_compacteds):
+        stmt = self._conn.prepare("COPY polymr_feature_record_map FROM STDIN")
+        ids = self._conn.query.chunks("SELECT tok, id FROM polymr_features")
+        tok_cache = dict(cat(ids))
+
+        def _rows():
+            for name, record_ids, compatcted in names_ids_compacteds:
+                for record_id in record_ids:
+                    tok_id = tok_cache[name]
+                    if type(record_id) is list:
+                        for i in range(record_id[0], record_id[1]+1):
+                            yield '{}\t{}\n'.format(tok_id, i).encode()
+                    else:
+                        yield '{}\t{}\n'.format(tok_id, record_id).encode()
+
+        with self._conn.xact():
+            stmt.load_rows(_rows())
+
+    def _prepare_record_select(self):
+        return self._conn.prepare(
             'SELECT fields, pk, data FROM polymr_records WHERE id = $1'
         )
+
+    def _get_record(self, idx, stmt):
+        packed = stmt.first(idx)
+        if packed is None:
+            raise KeyError
+        return Record(list(map(bytes.decode, loads(packed[0]))),
+                      packed[1],
+                      loads(packed[2]))
+
+    def get_record(self, idx):
+        stmt = self._prepare_record_select()
+        return self._get_record(idx, stmt)
+
+    def get_records(self, idxs):
+        stmt = self._prepare_record_select()
         for idx in idxs:
-            packed = stmt.first(idx)
-            if packed is None:
-                raise KeyError
-            yield Record(list(map(bytes.decode, loads(packed[0]))),
-                         packed[1],
-                         loads(packed[2]))
+            yield self._get_record(idx, stmt)
+
+    def save_record(self, rec):
+        stmt = self._conn.prepare(
+            'INSERT INTO polymr_records VALUES (DEFAULT, $1, $2, $3)'
+            ' RETURNING id'
+        )
+        with self._conn.xact():
+            idx = stmt.first(dumps(rec.fields), str(rec.pk), dumps(rec.data))
+        return idx
 
     def save_records(self, idx_recs, record_db=None):
         stmt = self._conn.prepare(
@@ -190,3 +278,7 @@ class PostgresBackend(AbstractBackend):
 
     def delete_record(self, idx):
         self._conn.prepare('DELETE from polymr_records WHERE id = $1')(idx)
+
+
+polymr.storage.backends['postgres'] = PostgresBackend
+polymr.storage.backends['pq'] = PostgresBackend

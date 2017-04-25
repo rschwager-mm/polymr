@@ -56,7 +56,6 @@ class TestEndToEndWithPostgres(unittest.TestCase):
             pk_field_idx=-1
         )
         polymr.index.records(recs, self.db)
-
         index = polymr.query.Index(self.db)
         hit = index.search(sample_query, limit=1)[0]
         self.assertEqual(hit['pk'], sample_pk,

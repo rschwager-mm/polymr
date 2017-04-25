@@ -7,6 +7,7 @@ from heapq import nsmallest
 from base64 import b64encode
 from collections import Counter
 from collections import OrderedDict
+from collections import defaultdict
 from itertools import chain
 from itertools import cycle
 from operator import itemgetter
@@ -25,6 +26,79 @@ class defaults:
     n = 600
     k = 12
     limit = 5
+
+
+class Index(object):
+    def __init__(self, backend):
+        self.backend = backend
+        self.rowcount = self.backend.get_rowcount()
+        self.featurizer = featurizers.all[self.backend.featurizer_name]
+
+    def _search(self, query, k=defaults.k, n=defaults.n):
+        toks = [b64encode(t) for t in self.featurizer(query)]
+        toks = self.backend.find_least_frequent_tokens(toks, k)
+        r_map = Counter()
+        for tok in toks:
+            rng = self.backend.get_token(tok)
+            r_map.update(rng)
+        top_ids = map(first, r_map.most_common(n))
+        return list(top_ids)
+
+    def _scored_records(self, record_ids, orig_query):
+        orig_features = score.features(orig_query)
+        for rownum, r in zip(record_ids, self.backend.get_records(record_ids)):
+            s = score.hit(orig_features, score.features(r.fields))
+            yield s, rownum, r
+
+    def search(self, query, limit=defaults.limit, k=defaults.k, n=defaults.n):
+        record_ids = self._search(query, k, n)
+        scores_records = self._scored_records(record_ids, query)
+        return [
+            {"fields": rec.fields, "pk": rec.pk, "score": s,
+             "data": rec.data, "rownum": rownum}
+            for s, rownum, rec in nsmallest(limit, scores_records, key=first)
+        ]
+
+    def _save_records(self, records):
+        completed = []
+        for rec in records:
+            try:
+                idx = self.backend.save_record(rec)
+            except:
+                for idx in completed:
+                    self.backend.delete_record(idx)
+                raise
+            completed.append(idx)
+        self.backend.increment_rowcount(len(completed))
+        return completed
+
+    def _update_tokens(self, tokmap, freq_update):
+        for tok in tokmap.keys():
+            idxs = tokmap[tok]
+            self.backend.update_token(tok, idxs)
+            freq_update[tok] = len(idxs)
+
+    def _update_tokens_and_freqs(self, tokmap):
+        freq_update = {}
+        try:
+            self._update_tokens(tokmap, freq_update)
+            self.backend.update_freqs(freq_update.items())
+        except:
+            for tok in freq_update:
+                self.backend.drop_records_from_token(tok, tokmap[tok])
+            raise
+
+    def add(self, records):
+        idxs = list(self._save_records(records))
+        tokmap = defaultdict(list)
+        for idx, rec in zip(idxs, records):
+            for tok in map(b64encode, self.featurizer(rec.fields)):
+                tokmap[tok].append(idx)
+        self._update_tokens_and_freqs(tokmap)
+        return idxs
+
+    def close(self):
+        return self.backend.close()
 
 
 class ParallelIndexWorker(multiprocessing.Process):
@@ -51,10 +125,10 @@ class ParallelIndexWorker(multiprocessing.Process):
             return None
 
     def _scores(self, blobs, orig_features):
-        for blob in blobs:
+        for rownum, blob in blobs:
             r = self.be_cls._get_record(blob)
             s = score.hit(orig_features, score.features(r.fields))
-            yield s, r
+            yield s, rownum, r
 
     def _score_records(self, orig_features, limit, blobs):
         scores_records = self._scores(blobs, orig_features)
@@ -90,14 +164,12 @@ class ParallelIndexWorker(multiprocessing.Process):
                 logger.debug("Method returned None. Back to get more work.")
 
 
-class ParallelIndex(object):
+class ParallelIndex(Index):
     def __init__(self, backend_url, n_workers):
         parsed = storage.urlparse(backend_url)
         self.backend = storage.backends[parsed.scheme].from_urlparsed(parsed)
         self.worker_rot8 = cycle(range(n_workers))
         self.started = self._startup_workers(n_workers, parsed.scheme)
-        self.freqs = self.backend.get_freqs()
-        logger.debug("got %s freqs", len(self.freqs))
         self.featurizer = featurizers.all[self.backend.featurizer_name]
 
     def _startup_workers(self, n_workers, backend_name):
@@ -115,8 +187,7 @@ class ParallelIndex(object):
     def _search(self, query_id, query, k, n):
         which_worker = next(self.worker_rot8)
         toks = [b64encode(t) for t in self.featurizer(query)]
-        toks = sorted(filter(self.freqs.__contains__, toks),
-                      key=self.freqs.__getitem__)[:k]
+        toks = self.backend.find_least_frequent_tokens(toks, k)
         for tok in toks:
             blob = self.backend._load_token_blob(tok)
             self.work_qs[which_worker].put(
@@ -127,7 +198,7 @@ class ParallelIndex(object):
     def _scored_records(self, query_id, record_ids, query, limit):
         which_worker = next(self.worker_rot8)
         orig_features = score.features(query)
-        blobs = [self.backend._load_record_blob(i) for i in record_ids]
+        blobs = [(i, self.backend._load_record_blob(i)) for i in record_ids]
         self.work_qs[which_worker].put(
             (query_id, 'score_records', [orig_features, limit, blobs])
         )
@@ -135,8 +206,9 @@ class ParallelIndex(object):
 
     @staticmethod
     def _format_resultset(scores_recs):
-        return [{"fields": rec.fields, "pk": rec.pk.decode(), "score": s,
-                 "data": rec.data} for s, rec in scores_recs]
+        return [{"fields": rec.fields, "pk": rec.pk, "score": s,
+                 "data": rec.data, "rownum": rownum}
+                for s, rownum, rec in scores_recs]
 
     def search(self, query, limit=defaults.limit, k=defaults.k, n=defaults.n):
         self._search(query, k, n)
@@ -191,40 +263,6 @@ class ParallelIndex(object):
             worker.join()
         logging.debug("Shutdown complete")
 
-
-class Index(object):
-    def __init__(self, backend):
-        self.backend = backend
-        self.freqs = self.backend.get_freqs()
-        self.rowcount = self.backend.get_rowcount()
-        self.featurizer = featurizers.all[self.backend.featurizer_name]
-
-    def _search(self, query, k=defaults.k, n=defaults.n):
-        toks = [b64encode(t) for t in self.featurizer(query)]
-        toks = sorted(filter(self.freqs.__contains__, toks),
-                      key=self.freqs.__getitem__)[:k]
-        r_map = Counter()
-        for tok in toks:
-            rng = self.backend.get_token(tok)
-            r_map.update(rng)
-        top_ids = map(first, r_map.most_common(n))
-        return list(top_ids)
-
-    def _scored_records(self, record_ids, orig_query):
-        orig_features = score.features(orig_query)
-        for r in self.backend.get_records(record_ids):
-            s = score.hit(orig_features, score.features(r.fields))
-            yield s, r
-
-    def search(self, query, limit=defaults.limit, k=defaults.k, n=defaults.n):
-        record_ids = self._search(query, k, n)
-        scores_records = self._scored_records(record_ids, query)
-        return [{"fields": rec.fields, "pk": rec.pk, "score": s,
-                 "data": rec.data}
-                for s, rec in nsmallest(limit, scores_records, key=first)]
-
-    def close(self):
-        return self.backend.close()
 
 
 class CLI:

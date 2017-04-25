@@ -6,7 +6,9 @@ from . import util
 def featurize_compress(rec):
     fs = set()
     for attr in rec:
-        fs.update(util.ngrams(_compress(attr.encode())))
+        fs.update(util.ngrams(
+            _compress(attr.encode())[2:]
+        ))
     return fs
 
 

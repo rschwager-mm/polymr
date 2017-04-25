@@ -37,16 +37,6 @@ class TestPostgresBackend(unittest.TestCase):
         self.assertEqual(x, dict(y))
 
     @skipIf(should_skip_test, ENVVAR+" not defined")
-    def test_get_set_rowcount(self):
-        db = self._get_db()
-        self.assertEqual(db.get_rowcount(), 0)
-        y = db.get_rowcount()
-        r1 = Record(["abcde", "foo"], "1", ['dogsays'])
-        r2 = Record(["qwert", "bar"], "2", ['barque'])
-        db.save_records(enumerate((r1, r2)))
-        self.assertEqual(db.get_rowcount(), 2)
-
-    @skipIf(should_skip_test, ENVVAR+" not defined")
     def test_get_set_token(self):
         db = self._get_db()
         tok = b"abc"
@@ -67,7 +57,6 @@ class TestPostgresBackend(unittest.TestCase):
         r1 = Record(["abcde", "foo"], "1", ['dogsays'])
         r2 = Record(["qwert", "bar"], "2", ['barque'])
         db.save_records(enumerate((r1, r2)))
-        self.assertEqual(db.get_rowcount(), 2)
         r1_db, r2_db = list(db.get_records([0, 1]))
         self.assertEqual(r1.fields, r1_db.fields)
         self.assertEqual(r1.pk, r1_db.pk)

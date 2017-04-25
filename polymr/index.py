@@ -13,6 +13,7 @@ from collections import defaultdict
 from operator import itemgetter
 
 from toolz import partition_all
+from toolz.dicttoolz import merge_with
 
 from . import storage
 from . import record
@@ -32,8 +33,8 @@ def _ef_worker(args):
     d = defaultdict(list)
     for i, kset in ksets:
         for kmer in kset:
-            d[kmer].append(i)
-    kmer_is = [(b64encode(kmer).decode(), ",".join(map(str, sorted(rset))))
+            d[b64encode(kmer)].append(i)
+    kmer_is = [(kmer.decode(), ",".join(map(str, sorted(rset))))
                for kmer, rset in d.items()]
     tmpfile = NamedTemporaryFile(dir=".", suffix="polymr_tmp_chunk.txt.gz",
                                  delete=False)
@@ -67,23 +68,26 @@ def _tmpparse(fobj):
 def _merge_tmpfiles(fnames):
     tmpout = NamedTemporaryFile(dir='.', suffix="polymr_tmp_chunk.txt.gz",
                                 delete=False)
+    freqs = {}
     with contextlib.ExitStack() as stack:
         fileobjs = [stack.enter_context(CompressedFile(fname, 'r'))
                     for fname in fnames]
         with CompressedFile(fileobj=tmpout, mode='w') as outf:
             kmer_ids = _merge(*map(_tmpparse, fileobjs), key=fst)
             for kmer, ids in kmer_ids:
+                freqs[kmer] = len(ids)
                 outf.write(b"|".join((kmer, ids))+b"\n")
     for fname in fnames:
         os.remove(fname)
-    return tmpout.name
+    return tmpout.name, freqs
 
 
-def _mergefeatures(tmpnames):
+def _mergefeatures(tmpnames, toobig):
     with contextlib.ExitStack() as stack:
         fileobjs = [stack.enter_context(CompressedFile(fname, 'r'))
                     for fname in tmpnames]
         kmer_ids = _merge(*map(_tmpparse_split, fileobjs), key=fst)
+        kmer_ids = iter(x for x in kmer_ids if x[0] not in toobig)
         for kmer, kmer_chunks in groupby(kmer_ids, key=fst):
             rng, compacted = util.merge_to_range(map(snd, kmer_chunks))
             yield kmer, rng, compacted
@@ -93,20 +97,19 @@ def extract_features(input_records, nproc, chunksize, backend,
                      tmpdir="/tmp", featurizer_name='default'):
     pool = multiprocessing.Pool(nproc, _initializer, (tmpdir,))
     chunks = partition_all(chunksize, enumerate(input_records))
-    tmpnames = pool.imap_unordered(_ef_worker,
-                                   zip(chunks, repeat(featurizer_name)),
-                                   chunksize=1)
+    tmpnames = pool.imap_unordered(
+        _ef_worker, zip(chunks, repeat(featurizer_name)), chunksize=1)
     tmpnames = list(tmpnames)
     tmpchunks = partition_all(len(tmpnames)//nproc + 1, tmpnames)
-    tmpnames = pool.imap_unordered(_merge_tmpfiles, tmpchunks, chunksize=1)
-    tmpnames = list(tmpnames)
-    tokens = _mergefeatures(tmpnames)
-    tokfreqs = {}
-    for token, record_ids, compacted in tokens:
-        tokfreqs[token] = sum(x[1] - x[0] + 1 if type(x) is list else 1
-                              for x in record_ids)
-        backend.save_token(token, record_ids, compacted)
-    backend.save_freqs(tokfreqs)
+    tmpnames_minifreqs = pool.imap_unordered(
+        _merge_tmpfiles, tmpchunks, chunksize=1)
+    tmpnames, minifreqs = zip(*list(tmpnames_minifreqs))
+    tokfreqs = merge_with(sum, minifreqs)
+    toobig = set()
+    backend.save_freqs({k: v for k, v in tokfreqs.items() if k not in toobig})
+    del tokfreqs
+    tokens = _mergefeatures(tmpnames, toobig)
+    backend.save_tokens(tokens)
     for tmpname in tmpnames:
         os.remove(tmpname)
 

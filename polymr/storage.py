@@ -1,5 +1,6 @@
 import os
 import logging
+import operator
 from collections import defaultdict
 from abc import ABCMeta
 from abc import abstractmethod
@@ -12,6 +13,10 @@ from .record import Record
 from .util import merge_to_range
 
 logger = logging.getLogger(__name__)
+_isinfo = logger.isEnabledFor(logging.INFO)
+
+
+logger = logging.getLogger(__name__)
 
 
 def loads(bs):
@@ -22,7 +27,7 @@ def dumps(obj):
     return msgpack.packb(obj)
 
 
-def copy(backend_from, backend_to):
+def copy(backend_from, backend_to, droptop=None):
     logger.debug("Copying from %s to %s", backend_from, backend_to)
     cnt = backend_from.get_rowcount()
     recs = backend_from.get_records(range(0, cnt))
@@ -30,16 +35,26 @@ def copy(backend_from, backend_to):
     backend_to.save_records(enumerate(recs))
     logger.info("Copying frequencies")
     freqs = backend_from.get_freqs()
+    if droptop is not None:
+        thresh = int(len(freqs) * float(droptop))
+        freqs = sorted(freqs.items(), key=operator.itemgetter(1),
+                       reverse=True)[thresh:]
+        freqs = dict(freqs)
     backend_to.save_freqs(freqs)
     logger.info("Copying featurizer name")
     backend_to.save_featurizer_name(backend_from.get_featurizer_name())
     logger.info("Copying features name")
-    for i, tok in enumerate(freqs):
-        idxs = backend_from.get_token(tok)
-        rngs, compacted = merge_to_range([idxs])
-        backend_to.save_token(tok, rngs, compacted)
-        if logger.isEnabledFor(logging.INFO) and i % (len(freqs) / 100) == 0:
-            logging.info("Feature copy %.2f%% complete", i / len(freqs) * 100)
+
+    def _rows():
+        for i, tok in enumerate(freqs):
+            idxs = backend_from.get_token(tok)
+            rngs, compacted = merge_to_range([idxs])
+            yield (tok, rngs, compacted)
+            if _isinfo and (i % (len(freqs) // 100)) == 0:
+                logger.info("Feature copy %.2f%% complete",
+                            i / len(freqs) * 100)
+
+    backend_to.save_tokens(_rows())
     logger.info("Copy complete")
 
 
@@ -60,7 +75,7 @@ class AbstractBackend(metaclass=ABCMeta):
         :returns: dict consisting of tokens and the number of records
           containing that token
 
-        :rtype: dict {str: int}
+        :rtype: dict {bytes: int}
         """
         ...
 
@@ -70,13 +85,24 @@ class AbstractBackend(metaclass=ABCMeta):
 
         :param d: The dict consisting of tokens and the number of
           records containing that token
-        :type d: dict {str: int}
+        :type d: dict {bytes: int}
         """
         ...
 
     @abstractmethod
     def get_rowcount(self):
         """Get the number of records indexed
+
+        :rtype: int
+        """
+        ...
+
+    @abstractmethod
+    def increment_rowcount(self, n):
+        """Increase the rowcount
+
+        :param n: The number by which to increase the rowcount
+        :type n: int
 
         :rtype: int
         """
@@ -96,10 +122,36 @@ class AbstractBackend(metaclass=ABCMeta):
         """Get the list of records containing the named token
 
         :param name: The token to get
-        :type name: str
+        :type name: bytes
 
         :returns: The list of records containing that token
         :rtype: list
+
+        """
+        ...
+
+    @abstractmethod
+    def update_token(self, name, record_ids):
+        """Update the list of record ids corresponding to a token.
+
+        :param name: The token
+        :type name: bytes
+
+        :param record_ids: The list of record ids containing the token
+        :type record_ids: list of int
+
+        """
+        ...
+
+    @abstractmethod
+    def drop_records_from_token(self, name, bad_record_ids):
+        """Remove bad record IDs from the list of IDs associated with a token
+
+        :param name: The token
+        :type name: bytes
+
+        :param bad_record_ids: The record ids to remove
+        :type bad_record_ids: list of int
 
         """
         ...
@@ -109,7 +161,7 @@ class AbstractBackend(metaclass=ABCMeta):
         """Save the list of records containing a named token
 
         :param name: The token
-        :type name: str
+        :type name: bytes
 
         :param record_ids: The list of record ids containing the token
         :type record_ids: list of int (or list-of-list-of-int if
@@ -125,12 +177,46 @@ class AbstractBackend(metaclass=ABCMeta):
         ...
 
     @abstractmethod
+    def save_tokens(self, names_ids_compacteds):
+        """Save many tokens in bulk. See ``save_token``.
+
+        :param names_ids_compacteds: A three-part tuple of token, the
+          ids corresponding to the token, and a boolean indicating
+          whether the id list is compacted to ranges.
+        :type names_ids_compacteds: tuple
+
+        """
+        ...
+
+    @abstractmethod
+    def get_record(self, idx):
+        """Gets a record with a record id
+
+        :param idx: The id of the record to retreive
+        :type idx: int
+
+        """
+        ...
+
+    @abstractmethod
     def get_records(self, idxs):
         """Get records by record id
 
         :param idxs: The ids of the records to retreive
         :type idxs: list of int
 
+        """
+        ...
+
+    @abstractmethod
+    def save_record(self, rec):
+        """Save records.
+
+        :param rec: The record to save
+        :type rec: polymr.record.Record
+
+        :returns: The ID of the newly created record
+        :rtype: int
         """
         ...
 
@@ -148,8 +234,18 @@ class AbstractBackend(metaclass=ABCMeta):
 
 
 class LevelDBBackend(AbstractBackend):
-    def __init__(self, path, create_if_missing=True,
-                 featurizer_name='default'):
+    def __init__(self, path=None,
+                 create_if_missing=True,
+                 featurizer_name='default',
+                 feature_db=None,
+                 record_db=None):
+        self._freqs = None
+        if feature_db is not None or record_db is not None:
+            self.feature_db = feature_db
+            self.record_db = record_db
+            self.path = None
+            return
+
         self.path = path
         if create_if_missing and not os.path.exists(path):
             os.mkdir(path)
@@ -191,8 +287,8 @@ class LevelDBBackend(AbstractBackend):
             self.save_featurizer_name('default')
 
     @classmethod
-    def from_urlparsed(cls, parsed):
-        return cls(parsed.path)
+    def from_urlparsed(cls, parsed, featurizer_name='default'):
+        return cls(parsed.path, featurizer_name=featurizer_name)
 
     def close(self):
         del self.feature_db
@@ -200,15 +296,31 @@ class LevelDBBackend(AbstractBackend):
         del self.record_db
         self.record_db = None
 
+    def find_least_frequent_tokens(self, toks, k):
+        if not self._freqs:
+            self._freqs = self.get_freqs()
+        return sorted(filter(self._freqs.__contains__, toks),
+                      key=self._freqs.__getitem__)[:k]
+
     def get_freqs(self):
         s = self.feature_db.Get("Freqs".encode())
         return defaultdict(int, loads(s))
+
+    def update_freqs(self, toks_cnts):
+        if not self._freqs:
+            self._freqs = self.get_freqs()
+        self._freqs.update(toks_cnts)
+        self.save_freqs(self._freqs)
 
     def save_freqs(self, freqs_dict):
         self.feature_db.Put("Freqs".encode(), dumps(freqs_dict))
 
     def get_rowcount(self):
         return loads(self.record_db.Get("Rowcount".encode()))
+
+    def increment_rowcount(self, n):
+        current_rowcount = self.get_rowcount()
+        self.save_rowcount(current_rowcount + n)
 
     def save_rowcount(self, cnt):
         self.record_db.Put("Rowcount".encode(), dumps(cnt))
@@ -233,11 +345,30 @@ class LevelDBBackend(AbstractBackend):
         blob = self._load_token_blob(name)
         return self._get_token(blob)
 
+    def update_token(self, name, record_ids):
+        try:
+            curidxs = self.get_token(name)
+        except KeyError:
+            # possible the token is new
+            curidxs = []
+        curidxs, compacted = merge_to_range([record_ids, curidxs])
+        self.save_token(name, curidxs, compacted)
+
+    def drop_records_from_token(self, name, bad_record_ids):
+        curidxs = self.get_token(name)
+        to_keep = list(set(curidxs)-set(bad_record_ids))
+        to_keep, compacted = merge_to_range(to_keep)
+        self.save_token(name, to_keep, compacted)
+
     def save_token(self, name, record_ids, compacted):
         self.feature_db.Put(
             name,
             dumps({b"idxs": record_ids, b"compacted": compacted})
         )
+
+    def save_tokens(self, names_ids_compacteds):
+        for name, record_ids, compacted in names_ids_compacteds:
+            self.save_token(name, record_ids, compacted)
 
     @staticmethod
     def _get_record(blob):
@@ -249,10 +380,21 @@ class LevelDBBackend(AbstractBackend):
     def _load_record_blob(self, idx):
         return self.record_db.Get(str(idx).encode())
 
+    def get_record(self, idx):
+        blob = self._load_record_blob(idx)
+        return self._get_record(blob)
+
     def get_records(self, idxs):
         for idx in idxs:
             blob = self._load_record_blob(idx)
             yield self._get_record(blob)
+
+    def save_record(self, rec, idx=None):
+        idx = self.get_rowcount() + 1 if idx is None else idx
+        self.record_db.Put(str(idx).encode(),
+                           dumps(rec))
+        self.save_rowcount(idx)
+        return idx
 
     def save_records(self, idx_recs, record_db=None):
         for cnt, (idx, rec) in enumerate(idx_recs):
@@ -269,11 +411,12 @@ class LevelDBBackend(AbstractBackend):
 backends = {"leveldb": LevelDBBackend}
 
 
-def parse_url(u):
+def parse_url(u, featurizer_name='default'):
     parsed = urlparse(u)
     if parsed.scheme not in backends:
         raise ValueError("Unrecognized scheme: "+parsed.scheme)
-    return backends[parsed.scheme].from_urlparsed(parsed)
+    return backends[parsed.scheme].from_urlparsed(
+        parsed, featurizer_name=featurizer_name)
 
 
 backend_arg = (["-b", "--backend"], {
