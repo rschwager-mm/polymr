@@ -46,15 +46,7 @@ class TestEndToEnd(unittest.TestCase):
             pk_field_idx=-1,
             include_data=False
         )
-        polymr.index.extract_features(recs, 1, 10, self.db)
-        to_index.seek(0)
-        recs = polymr.record.from_csv(
-            to_index,
-            searched_fields_idxs=[0,2,4,5],
-            pk_field_idx=-1
-        )
-        polymr.index.records(recs, self.db)
-
+        polymr.index.create(recs, 1, 10, self.db)
         index = polymr.query.Index(self.db)
         hit = index.search(sample_query, limit=1)[0]
         self.assertEqual(hit['pk'], sample_pk,

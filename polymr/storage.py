@@ -4,19 +4,19 @@ import operator
 from collections import defaultdict
 from abc import ABCMeta
 from abc import abstractmethod
+from itertools import count as counter
 from urllib.parse import urlparse
 
 import leveldb
 import msgpack
+from toolz import partition_all
 
 from .record import Record
 from .util import merge_to_range
 
 logger = logging.getLogger(__name__)
 _isinfo = logger.isEnabledFor(logging.INFO)
-
-
-logger = logging.getLogger(__name__)
+snd = operator.itemgetter(1)
 
 
 def loads(bs):
@@ -236,7 +236,7 @@ class AbstractBackend(metaclass=ABCMeta):
 class LevelDBBackend(AbstractBackend):
     def __init__(self, path=None,
                  create_if_missing=True,
-                 featurizer_name='default',
+                 featurizer_name=None,
                  feature_db=None,
                  record_db=None):
         self._freqs = None
@@ -287,7 +287,7 @@ class LevelDBBackend(AbstractBackend):
             self.save_featurizer_name('default')
 
     @classmethod
-    def from_urlparsed(cls, parsed, featurizer_name='default'):
+    def from_urlparsed(cls, parsed, featurizer_name=None):
         return cls(parsed.path, featurizer_name=featurizer_name)
 
     def close(self):
@@ -296,11 +296,19 @@ class LevelDBBackend(AbstractBackend):
         del self.record_db
         self.record_db = None
 
-    def find_least_frequent_tokens(self, toks, k):
+    def find_least_frequent_tokens(self, toks, r):
         if not self._freqs:
             self._freqs = self.get_freqs()
-        return sorted(filter(self._freqs.__contains__, toks),
-                      key=self._freqs.__getitem__)[:k]
+        toks_freqs = [(tok, self._freqs[tok]) for tok in toks
+                      if tok in self._freqs]
+        total = 0
+        ret = []
+        for tok, freq in sorted(toks_freqs, key=snd):
+            if total + freq > r:
+                break
+            total += freq
+            ret.append(tok)
+        return ret
 
     def get_freqs(self):
         s = self.feature_db.Get("Freqs".encode())
@@ -389,20 +397,27 @@ class LevelDBBackend(AbstractBackend):
             blob = self._load_record_blob(idx)
             yield self._get_record(blob)
 
-    def save_record(self, rec, idx=None):
+    def save_record(self, rec, idx=None, save_rowcount=True):
         idx = self.get_rowcount() + 1 if idx is None else idx
         self.record_db.Put(str(idx).encode(),
                            dumps(rec))
-        self.save_rowcount(idx)
+        if save_rowcount is True:
+            self.save_rowcount(idx)
         return idx
 
-    def save_records(self, idx_recs, record_db=None):
-        for cnt, (idx, rec) in enumerate(idx_recs):
-            self.record_db.Put(
-                str(idx).encode(),
-                dumps(rec)
-            )
-        return cnt+1
+    def save_records(self, idx_recs, record_db=None, chunk_size=5000):
+        chunks = partition_all(chunk_size, idx_recs)
+        cnt = counter()
+        for chunk in chunks:
+            batch = leveldb.WriteBatch()
+            for idx, rec in chunk:
+                batch.Put(
+                    str(idx).encode(),
+                    dumps(rec)
+                )
+                next(cnt)
+            self.record_db.Write(batch)
+        return next(cnt)
 
     def delete_record(self, idx):
         self.record_db.Delete(str(idx).encode())
@@ -411,7 +426,7 @@ class LevelDBBackend(AbstractBackend):
 backends = {"leveldb": LevelDBBackend}
 
 
-def parse_url(u, featurizer_name='default'):
+def parse_url(u, featurizer_name=None):
     parsed = urlparse(u)
     if parsed.scheme not in backends:
         raise ValueError("Unrecognized scheme: "+parsed.scheme)

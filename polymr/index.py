@@ -93,10 +93,18 @@ def _mergefeatures(tmpnames, toobig):
             yield kmer, rng, compacted
 
 
-def extract_features(input_records, nproc, chunksize, backend,
-                     tmpdir="/tmp", featurizer_name='default'):
+def parse_and_save_records(input_records, backend):
+    for i, rec in enumerate(input_records):
+        backend.save_record(rec, i, save_rowcount=False)
+        yield i, rec
+    backend.save_rowcount(i + 1)
+
+
+def create(input_records, nproc, chunksize, backend,
+           tmpdir="/tmp", featurizer_name='default'):
     pool = multiprocessing.Pool(nproc, _initializer, (tmpdir,))
-    chunks = partition_all(chunksize, enumerate(input_records))
+    recs = parse_and_save_records(input_records, backend)
+    chunks = partition_all(chunksize, recs)
     tmpnames = pool.imap_unordered(
         _ef_worker, zip(chunks, repeat(featurizer_name)), chunksize=1)
     tmpnames = list(tmpnames)
@@ -112,6 +120,7 @@ def extract_features(input_records, nproc, chunksize, backend,
     backend.save_tokens(tokens)
     for tmpname in tmpnames:
         os.remove(tmpname)
+    backend.save_featurizer_name(featurizer_name)
 
 
 def records(input_records, backend):
@@ -124,15 +133,7 @@ class CLI:
     name = "index"
 
     arguments = [
-        (["-1", "--step1"], {
-            "type": bool,
-            "help": "Step 1: Generate and index features"
-        }),
         storage.backend_arg,
-        (["-2", "--step2"], {
-            "type": bool,
-            "help": "Store non-search attributes"
-        }),
         (["-i", "--input"], {
             "help": "Defaults to stdin"
         }),
@@ -175,28 +176,14 @@ class CLI:
             parser.print_help()
             sys.exit(1)
 
-        if args.step1:
-            backend = storage.parse_url(args.backend)
-            with util.openfile(args.input or sys.stdin) as inp:
-                recs = record.from_csv(
-                    inp,
-                    searched_fields_idxs=sidxs,
-                    pk_field_idx=args.primary_key,
-                    include_data=False
-                )
-                ret = extract_features(recs, args.parallel, args.chunksize,
-                                       backend, tmpdir=args.tmpdir,
-                                       featurizer_name=args.featurizer)
-            return ret
-        elif args.step2:
-            backend = storage.parse_url(args.backend)
-            with util.openfile(args.input or sys.stdin) as inp:
-                recs = record.from_csv(
-                    inp,
-                    searched_fields_idxs=sidxs,
-                    pk_field_idx=args.primary_key,
-                )
-                ret = records(recs, backend)
-            return ret
-        else:
-            return parser.print_help()
+        backend = storage.parse_url(args.backend)
+        with util.openfile(args.input or sys.stdin) as inp:
+            recs = record.from_csv(
+                inp,
+                searched_fields_idxs=sidxs,
+                pk_field_idx=args.primary_key,
+                include_data=False
+            )
+            return create(recs, args.parallel, args.chunksize,
+                          backend, tmpdir=args.tmpdir,
+                          featurizer_name=args.featurizer)

@@ -19,7 +19,7 @@ cat = chain.from_iterable
 
 class PostgresBackend(AbstractBackend):
     def __init__(self, url_or_connection=None, create_if_missing=True,
-                 featurizer_name='default'):
+                 featurizer_name=None):
         if type(url_or_connection) is str:
             url = url_or_connection
             self._conn = postgresql.open(url)
@@ -128,18 +128,25 @@ class PostgresBackend(AbstractBackend):
             self.save_featurizer_name('default')
 
     @classmethod
-    def from_urlparsed(cls, parsed, featurizer_name='default'):
+    def from_urlparsed(cls, parsed, featurizer_name=None):
         return cls(urlunparse(parsed), featurizer_name=featurizer_name)
 
     def close(self):
         self._conn.close()
 
-    def find_least_frequent_tokens(self, toks, k):
+    def find_least_frequent_tokens(self, toks, r):
         stmt = self._conn.prepare("SELECT tok, freq FROM polymr_features"
                                   " WHERE tok = $1")
-        freqs = dict(filter(None, map(stmt.first, toks)))
-        return sorted(filter(freqs.__contains__, toks), 
-                      key=freqs.__getitem__)[:k]
+        toks_freqs = sorted(filter(None, map(stmt.first, toks)),
+                            key=snd)
+        ret = []
+        total = 0
+        for tok, freq in toks_freqs:
+            if total + freq > r:
+                break
+            total += freq
+            ret.append(tok)
+        return ret
 
     def _has_freqs(self):
         cnt = self._conn.query.first("SELECT COUNT(*) FROM polymr_features")
@@ -257,7 +264,7 @@ class PostgresBackend(AbstractBackend):
         for idx in idxs:
             yield self._get_record(idx, stmt)
 
-    def save_record(self, rec):
+    def save_record(self, rec, idx=None, save_rowcount=True):
         stmt = self._conn.prepare(
             'INSERT INTO polymr_records VALUES (DEFAULT, $1, $2, $3)'
             ' RETURNING id'
@@ -266,13 +273,13 @@ class PostgresBackend(AbstractBackend):
             idx = stmt.first(dumps(rec.fields), str(rec.pk), dumps(rec.data))
         return idx
 
-    def save_records(self, idx_recs, record_db=None):
+    def save_records(self, idx_recs, record_db=None, chunk_size=5000):
         stmt = self._conn.prepare(
             'INSERT INTO polymr_records VALUES (DEFAULT, $1, $2, $3)'
         )
         rows = iter((dumps(rec.fields), str(rec.pk), dumps(rec.data))
                     for rec in map(snd, idx_recs))
-        chunks = partition_all(1000, rows)
+        chunks = partition_all(chunk_size, rows)
         with self._conn.xact():
             stmt.load_chunks(chunks)
 
