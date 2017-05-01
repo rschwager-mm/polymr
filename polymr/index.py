@@ -94,9 +94,11 @@ def _mergefeatures(tmpnames, toobig):
 
 
 def parse_and_save_records(input_records, backend):
-    for i, rec in enumerate(input_records):
-        backend.save_record(rec, i, save_rowcount=False)
-        yield i, rec
+    batches = partition_all(5000, enumerate(input_records))
+    for idxs_recs in batches:
+        backend.save_records(idxs_recs)
+        for i, rec in idxs_recs:
+            yield i, rec._replace(data=[])
     backend.save_rowcount(i + 1)
 
 
@@ -182,7 +184,7 @@ class CLI:
                 inp,
                 searched_fields_idxs=sidxs,
                 pk_field_idx=args.primary_key,
-                include_data=False
+                include_data=True
             )
             return create(recs, args.parallel, args.chunksize,
                           backend, tmpdir=args.tmpdir,
