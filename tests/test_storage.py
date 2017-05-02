@@ -65,4 +65,15 @@ class TestLevelDBBackend(unittest.TestCase):
         self.assertEqual(r1.pk, r1_db.pk)
         self.assertEqual(r2.fields, r2_db.fields)
         self.assertEqual(r2.pk, r2_db.pk)
-        
+
+
+class TestRocksDBBackend(TestLevelDBBackend):
+    def _get_db(self, new=False):
+        if self.db and not new:
+            return self.db
+        if self.db:
+            self.db.close()
+        self.db = polymr.storage.parse_url(
+            "rocksdb://localhost"+self.workdir)
+        return self.db
+

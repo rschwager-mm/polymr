@@ -242,7 +242,7 @@ class ParallelIndex(Index):
                 continue
             if isinstance(ret, Exception):
                 logger.warning("Hit exception while processing query %i: %s",
-                                query_id, ret)
+                               query_id, ret)
                 send_later[query_id] = ret
                 del self.in_progress[query_id]
                 continue
@@ -260,7 +260,9 @@ class ParallelIndex(Index):
                     yield self._format_resultset(send_later.pop(n_sent))
                     logger.info("Completed query %i", n_sent)
                     logger.debug((self.in_progress, self.to_do, send_later))
-                    logger.debug("Any left to do? %s", any((self.in_progress, self.to_do, send_later)))
+                    logger.debug(
+                        "Any left to do? %s",
+                        any((self.in_progress, self.to_do, send_later)))
                     n_sent += 1
 
     def searchmany(self, queries, limit=defaults.limit, r=defaults.r,
@@ -282,7 +284,6 @@ class ParallelIndex(Index):
             logger.debug("Joining worker %i", i)
             worker.join()
         logger.debug("Shutdown complete")
-
 
 
 class CLI:
