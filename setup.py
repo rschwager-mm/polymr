@@ -5,7 +5,6 @@ requires = [
     "toolz",
     "msgpack-python",
     "python-rocksdb"
-    "rocksdb-python"
 ]
 
 setup(
