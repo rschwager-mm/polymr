@@ -4,7 +4,7 @@ requires = [
     "leveldb",
     "toolz",
     "msgpack-python",
-    "rocksdb-python"
+    "python-rocksdb"
 ]
 
 setup(
