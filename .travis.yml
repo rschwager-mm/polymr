@@ -1,14 +1,29 @@
 language: python
 dist: trusty
+sudo: required
 python:
   - 3.5
 services:
   - postgreql
 addons:
   postgresql: "9.6"
+  apt:
+    sources:
+      - 'ubuntu-toolchain-r-test'
+      - 'llvm-toolchain-precise-3.6'
+    packages:
+      - 'clang-3.6'
+      - 'g++-6'
+      - 'zlib1g-dev'
+      - 'libbz2-dev'
+      - 'libsnappy-dev'
+      - 'curl'
+      - 'libgflags-dev'
 before_script:
   - psql -c 'create database travis_ci_test;' -U postgres
 install:
+  - bash -c 'git clone https://github.com/facebook/rocksdb rocksdb_src && cd rocksdb_src && sudo make install-shared'
+  - bash -c 'echo "/usr/local/lib | sudo tee -a /etc/ld.so.conf.d/python.conf" && sudo ldconfig'
   - python setup.py install
   - bash -c 'cd postgres && python setup.py install'
 script:

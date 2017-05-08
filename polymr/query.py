@@ -25,6 +25,7 @@ cat = chain.from_iterable
 class defaults:
     n = 600
     r = int(1e5)
+    k = None
     limit = 5
 
 
@@ -34,13 +35,15 @@ class Index(object):
         self.rowcount = self.backend.get_rowcount()
         self.featurizer = featurizers.all[self.backend.featurizer_name]
 
-    def _search(self, query, r=defaults.r, n=defaults.n):
+    def _search(self, query, r, n, k):
         toks = [b64encode(t) for t in self.featurizer(query)]
         toks = self.backend.find_least_frequent_tokens(toks, r)
         r_map = Counter()
-        for tok in toks:
+        for i, tok in enumerate(toks, 1):
             rng = self.backend.get_token(tok)
             r_map.update(rng)
+            if k and i >= k: #  try to get k token mappings
+                break
         top_ids = map(first, r_map.most_common(n))
         return list(top_ids)
 
@@ -50,8 +53,9 @@ class Index(object):
             s = score.hit(orig_features, score.features(r.fields))
             yield s, rownum, r
 
-    def search(self, query, limit=defaults.limit, r=defaults.r, n=defaults.n):
-        record_ids = self._search(query, r, n)
+    def search(self, query, limit=defaults.limit, r=defaults.r, n=defaults.n,
+               k=None):
+        record_ids = self._search(query, r, n, k)
         scores_records = self._scored_records(record_ids, query)
         return [
             {"fields": rec.fields, "pk": rec.pk, "score": s,
@@ -186,15 +190,17 @@ class ParallelIndex(Index):
             worker.start()
         return True
 
-    def _search(self, query_id, query, r, n):
+    def _search(self, query_id, query, r, n, k):
         which_worker = next(self.worker_rot8)
         toks = [b64encode(t) for t in self.featurizer(query)]
         toks = self.backend.find_least_frequent_tokens(toks, r)
-        for tok in toks:
+        for i, tok in enumerate(toks, 1):
             blob = self.backend._load_token_blob(tok)
             self.work_qs[which_worker].put(
                 (query_id, 'count_tokens', [query_id, len(toks), blob, n])
             )
+            if k and i >= k:
+                break
         return which_worker
 
     def _scored_records(self, query_id, record_ids, query, limit):
@@ -212,29 +218,30 @@ class ParallelIndex(Index):
                  "data": rec.data, "rownum": rownum}
                 for s, rownum, rec in scores_recs]
 
-    def search(self, query, limit=defaults.limit, r=defaults.r, n=defaults.n):
+    def search(self, query, limit=defaults.limit, r=defaults.r,
+               n=defaults.n, k=defaults.k):
         self._search(0, query, r, n)
         _, _, record_ids = self.result_q.get()
         self._scored_records(0, record_ids, query, limit)
         _, _, scores_recs = self.result_q.get()
         return self._format_resultset(scores_recs)
 
-    def _fill_work_queues(self, r, n):
+    def _fill_work_queues(self, r, n, k):
         n_filled = 0
         while len(self.in_progress) < len(self.workers)*3 and self.to_do:
             query_id, query = self.to_do.popitem(last=False)
-            self._search(query_id, query, r, n)
+            self._search(query_id, query, r, n, k)
             self.in_progress[query_id] = query
             n_filled += 1
         logger.debug("Added %i tasks to work queues", n_filled)
 
-    def _searchmany(self, queries, limit, r, n):
+    def _searchmany(self, queries, limit, r, n, k):
         self.to_do = OrderedDict(enumerate(queries))
         self.in_progress = {}
         send_later = {}  # query_id : search results
         n_sent = 0
         while any((self.in_progress, self.to_do, send_later)):
-            self._fill_work_queues(r, n)
+            self._fill_work_queues(r, n, k)
             try:
                 query_id, meth, ret = self.result_q.get()
             except queue.Empty:
@@ -242,7 +249,7 @@ class ParallelIndex(Index):
                 continue
             if isinstance(ret, Exception):
                 logger.warning("Hit exception while processing query %i: %s",
-                                query_id, ret)
+                               query_id, ret)
                 send_later[query_id] = ret
                 del self.in_progress[query_id]
                 continue
@@ -260,14 +267,16 @@ class ParallelIndex(Index):
                     yield self._format_resultset(send_later.pop(n_sent))
                     logger.info("Completed query %i", n_sent)
                     logger.debug((self.in_progress, self.to_do, send_later))
-                    logger.debug("Any left to do? %s", any((self.in_progress, self.to_do, send_later)))
+                    logger.debug(
+                        "Any left to do? %s",
+                        any((self.in_progress, self.to_do, send_later)))
                     n_sent += 1
 
     def searchmany(self, queries, limit=defaults.limit, r=defaults.r,
-                   n=defaults.n):
+                   n=defaults.n, k=defaults.k):
         self.started = self._startup_workers()
         try:
-            for result in self._searchmany(queries, limit, r, n):
+            for result in self._searchmany(queries, limit, r, n, k):
                 yield result
         finally:
             self.close(close_backend=False)
@@ -282,7 +291,6 @@ class ParallelIndex(Index):
             logger.debug("Joining worker %i", i)
             worker.join()
         logger.debug("Shutdown complete")
-
 
 
 class CLI:

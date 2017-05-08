@@ -25,18 +25,19 @@ sample_query = ["01030","MELANI","PICKETT","18 PAUL REVERE DR"]
 sample_pk = "989960D48D"
 
 
-class TestEndToEnd(unittest.TestCase):
+class TestEndToEndWithLevelDB(unittest.TestCase):
     def setUp(self):
         self.workdir = tempfile.mkdtemp(suffix="polymrtest")
         self.db = polymr.storage.parse_url(
             "leveldb://localhost"+self.workdir)
-
+        to_index.seek(0)
 
     def tearDown(self):
         self.db.close()
         del self.db
         if os.path.exists(self.workdir):
             shutil.rmtree(self.workdir)
+        to_index.seek(0)
 
     def test_end_to_end(self):
         feats_json = StringIO()
@@ -59,6 +60,12 @@ class TestEndToEnd(unittest.TestCase):
         hit = index.search([tpyo]+sample_query[1:], limit=1)[0]
         self.assertEqual(hit['pk'], sample_pk,"searches should survive typos")
         
+
+class TestEndToEndWithRocksDB(TestEndToEndWithLevelDB):
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(suffix="polymrtest")
+        self.db = polymr.storage.parse_url(
+            "rocksdb://localhost"+self.workdir)
         
         
 if __name__ == '__main__':
