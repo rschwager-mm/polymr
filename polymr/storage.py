@@ -558,12 +558,11 @@ backends = {"leveldb": LevelDBBackend,
             "rocksdb": RocksDBBackend}
 
 
-def parse_url(u, featurizer_name=None):
+def parse_url(u, **kwargs):
     parsed = urlparse(u)
     if parsed.scheme not in backends:
         raise ValueError("Unrecognized scheme: "+parsed.scheme)
-    return backends[parsed.scheme].from_urlparsed(
-        parsed, featurizer_name=featurizer_name)
+    return backends[parsed.scheme].from_urlparsed(parsed, **kwargs)
 
 
 backend_arg = (["-b", "--backend"], {
