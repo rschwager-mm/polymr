@@ -67,6 +67,49 @@ class TestEndToEndWithRocksDB(TestEndToEndWithLevelDB):
         self.db = polymr.storage.parse_url(
             "rocksdb://localhost"+self.workdir)
         
+
+class TestEndToEndParallelWithLevelDB(unittest.TestCase):
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(suffix="polymrtest")
+        self.url = "leveldb://localhost"+self.workdir
+        to_index.seek(0)
+
+    def tearDown(self):
+        if os.path.exists(self.workdir):
+            shutil.rmtree(self.workdir)
+        to_index.seek(0)
+
+    def test_end_to_end(self):
+        feats_json = StringIO()
+        recs = polymr.record.from_csv(
+            to_index,
+            searched_fields_idxs=[0,2,4,5],
+            pk_field_idx=-1,
+            include_data=False
+        )
+        db = polymr.storage.parse_url(self.url)
+        polymr.index.create(recs, 1, 10, db)
+        del db
+        index = polymr.query.ParallelIndex(self.url, 2)
+        hit = index.search(sample_query, limit=1)[0]
+        self.assertEqual(hit['pk'], sample_pk,
+                         ("querying the index with an indexed record should "
+                          "return that same record"))
+        
+        tpyo1 = list(sample_query[0])
+        tpyo1[2], tpyo1[3] = tpyo1[3], tpyo1[2]
+        tpyo1 = "".join(tpyo1)
+        tpyo2 = list(sample_query[0])
+        tpyo2[1], tpyo2[2] = tpyo2[2], tpyo2[1]
+        tpyo2 = "".join(tpyo2)
+        results = index.searchmany([[tpyo1]+sample_query[1:],
+                                    [tpyo2]+sample_query[1:]], limit=1)
+        for result in results:
+            hit = result[0]
+            self.assertEqual(hit['pk'], sample_pk,
+                             "searches should survive typos")
+        
+
         
 if __name__ == '__main__':
     unittest.main()

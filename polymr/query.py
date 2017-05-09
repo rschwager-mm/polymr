@@ -120,9 +120,10 @@ class ParallelIndexWorker(multiprocessing.Process):
         if not r_map:
             r_map = self.counters[query_key] = {'cntr': Counter(),
                                                 'n_toks': 0}
-        r_map['cntr'].update(self.be_cls._get_token(blob))
+        if blob:
+            r_map['cntr'].update(self.be_cls._get_token(blob))
         r_map['n_toks'] += 1
-        if r_map['n_toks'] == n_total_toks:
+        if r_map['n_toks'] >= n_total_toks:
             cnt = self.counters.pop(query_key)['cntr']
             return list(map(first, cnt.most_common(n)))
         else:
@@ -160,7 +161,7 @@ class ParallelIndexWorker(multiprocessing.Process):
                 ret = e
                 traceback.print_exc()
                 pass
-            if ret:
+            if ret is not None:
                 logger.debug("Finished, putting result on q")
                 self.result_q.put_nowait((query_id, meth, ret))
                 logger.debug("Result put on result_q. Back to get more work.")
@@ -194,6 +195,10 @@ class ParallelIndex(Index):
         which_worker = next(self.worker_rot8)
         toks = [b64encode(t) for t in self.featurizer(query)]
         toks = self.backend.find_least_frequent_tokens(toks, r)
+        if not toks:
+            self.work_qs[which_worker].put(
+                (query_id, 'count_tokens', [query_id, len(toks), None, n])
+            )
         for i, tok in enumerate(toks, 1):
             blob = self.backend._load_token_blob(tok)
             self.work_qs[which_worker].put(
@@ -220,11 +225,15 @@ class ParallelIndex(Index):
 
     def search(self, query, limit=defaults.limit, r=defaults.r,
                n=defaults.n, k=defaults.k):
-        self._search(0, query, r, n)
-        _, _, record_ids = self.result_q.get()
-        self._scored_records(0, record_ids, query, limit)
-        _, _, scores_recs = self.result_q.get()
-        return self._format_resultset(scores_recs)
+        self.started = self._startup_workers()
+        try:
+            self._search(0, query, r, n, k)
+            _, _, record_ids = self.result_q.get()
+            self._scored_records(0, record_ids, query, limit)
+            _, _, scores_recs = self.result_q.get()
+            return self._format_resultset(scores_recs)
+        finally:
+            self.close(close_backend=False)
 
     def _fill_work_queues(self, r, n, k):
         n_filled = 0
