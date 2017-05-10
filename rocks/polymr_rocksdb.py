@@ -1,5 +1,5 @@
 import os
-from itertools import counter
+from itertools import count as counter
 from collections import defaultdict
 
 import rocksdb
@@ -133,4 +133,4 @@ class RocksDBBackend(LevelDBBackend):
         self.record_db.delete(str(idx).encode())
 
 
-polymr.storage.backend['rocksdb'] = RocksDBBackend
+polymr.storage.backends['rocksdb'] = RocksDBBackend
