@@ -1,6 +1,4 @@
 import os
-import shutil
-import tempfile
 import unittest
 from unittest import skipIf
 from io import StringIO
@@ -41,7 +39,6 @@ class TestEndToEndWithPostgres(unittest.TestCase):
 
     @skipIf(should_skip_test, ENVVAR+" not defined")
     def test_end_to_end(self):
-        feats_json = StringIO()
         recs = polymr.record.from_csv(
             to_index,
             searched_fields_idxs=[0,2,4,5],

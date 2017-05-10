@@ -3,8 +3,7 @@ from setuptools import setup
 requires = [
     "leveldb",
     "toolz",
-    "msgpack-python",
-    "python-rocksdb"
+    "msgpack-python"
 ]
 
 setup(
