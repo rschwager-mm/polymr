@@ -4,14 +4,14 @@ requires = [
     "polymr",
     "toolz",
     "msgpack-python",
-    "py-postgresql<=1.2.1"
+    "python-rocksdb"
 ]
 
 setup(
-    name='polymr_postgres',
+    name='polymr_rocksdb',
     version='0.0.1',
-    description=("Postgres backend for polymr search"),
-    py_modules=['polymr_postgres'],
+    description=("Rocksdb backend for polymr search"),
+    py_modules=['polymr_rocksdb'],
     install_requires=requires,
     classifiers=[
         "Development Status :: 2 - Pre-Alpha"
