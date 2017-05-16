@@ -37,13 +37,11 @@ class Index(object):
 
     def _search(self, query, r, n, k):
         toks = [b64encode(t) for t in self.featurizer(query)]
-        toks = self.backend.find_least_frequent_tokens(toks, r)
+        toks = self.backend.find_least_frequent_tokens(toks, r, k)
         r_map = Counter()
         for i, tok in enumerate(toks, 1):
             rng = self.backend.get_token(tok)
             r_map.update(rng)
-            if k and i >= k: #  try to get k token mappings
-                break
         top_ids = map(first, r_map.most_common(n))
         return list(top_ids)
 

@@ -296,18 +296,20 @@ class LevelDBBackend(AbstractBackend):
         del self.record_db
         self.record_db = None
 
-    def find_least_frequent_tokens(self, toks, r):
+    def find_least_frequent_tokens(self, toks, r, k=None):
         if not self._freqs:
             self._freqs = self.get_freqs()
         toks_freqs = [(tok, self._freqs[tok]) for tok in toks
                       if tok in self._freqs]
         total = 0
         ret = []
-        for tok, freq in sorted(toks_freqs, key=snd):
+        for i, (tok, freq) in enumerate(sorted(toks_freqs, key=snd)):
             if total + freq > r:
                 break
             total += freq
             ret.append(tok)
+            if k and i >= k: #  try to get k token mappings
+                break
         return ret
 
     def get_freqs(self):
