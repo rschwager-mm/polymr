@@ -5,6 +5,7 @@ from collections import defaultdict
 from abc import ABCMeta
 from abc import abstractmethod
 from itertools import count as counter
+from functools import partial
 from urllib.parse import urlparse
 
 import leveldb
@@ -27,34 +28,49 @@ def dumps(obj):
     return msgpack.packb(obj)
 
 
-def copy(backend_from, backend_to, droptop=None):
+def copy(backend_from, backend_to, droptop=None, 
+         skip_copy_records=False, skip_copy_featurizer=False,
+         skip_copy_freqs=False, skip_copy_tokens=False, threads=None):
     logger.debug("Copying from %s to %s", backend_from, backend_to)
-    cnt = backend_from.get_rowcount()
-    recs = backend_from.get_records(range(0, cnt))
-    logger.info("Copying %i records", cnt)
-    backend_to.save_records(enumerate(recs))
-    logger.info("Copying frequencies")
-    freqs = backend_from.get_freqs()
+    if threads is not None:
+        save_records = partial(backend_to.save_records, threads=threads)
+        save_tokens = partial(backend_to.save_tokens, threads=threads)
+    if skip_copy_records is False:
+        cnt = backend_from.get_rowcount()
+        recs = backend_from.get_records(range(0, cnt))
+        logger.info("Copying %i records", cnt)
+        save_records(enumerate(recs))
+    if skip_copy_freqs is False:
+        logger.info("Copying frequencies")
+    if any((skip_copy_freqs is False,
+            droptop is not None,
+            skip_copy_tokens is False)):
+        freqs = backend_from.get_freqs()
     if droptop is not None:
         thresh = int(len(freqs) * float(droptop))
         freqs = sorted(freqs.items(), key=operator.itemgetter(1),
                        reverse=True)[thresh:]
         freqs = dict(freqs)
-    backend_to.save_freqs(freqs)
-    logger.info("Copying featurizer name")
-    backend_to.save_featurizer_name(backend_from.get_featurizer_name())
-    logger.info("Copying features name")
+    if skip_copy_freqs is False:
+        backend_to.save_freqs(freqs)
+    if skip_copy_featurizer is False:
+        logger.info("Copying featurizer name")
+        backend_to.save_featurizer_name(backend_from.get_featurizer_name())
 
     def _rows():
         for i, tok in enumerate(freqs):
             idxs = backend_from.get_token(tok)
             rngs, compacted = merge_to_range([idxs])
             yield (tok, rngs, compacted)
-            if _isinfo and (i % (len(freqs) // 100)) == 0:
-                logger.info("Feature copy %.2f%% complete",
-                            i / len(freqs) * 100)
+            if _isinfo:
+                n_bins = len(freqs) // 100
+                if (i % n_bins) == 0:
+                    logger.info("Feature copy %.2f%% complete",
+                                i / len(freqs) * 100)
 
-    backend_to.save_tokens(_rows())
+    if skip_copy_tokens is False:
+        logger.info("Copying features")
+        save_tokens(_rows())
     logger.info("Copy complete")
 
 

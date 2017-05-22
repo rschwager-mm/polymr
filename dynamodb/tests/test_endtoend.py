@@ -1,10 +1,6 @@
-import os
-import shutil
-import tempfile
 import random
 import unittest
 from io import StringIO
-from unittest import skipIf
 
 import polymr.index
 import polymr.storage

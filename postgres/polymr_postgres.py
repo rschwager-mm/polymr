@@ -134,18 +134,20 @@ class PostgresBackend(AbstractBackend):
     def close(self):
         self._conn.close()
 
-    def find_least_frequent_tokens(self, toks, r):
+    def find_least_frequent_tokens(self, toks, r, k=None):
         stmt = self._conn.prepare("SELECT tok, freq FROM polymr_features"
                                   " WHERE tok = $1")
         toks_freqs = sorted(filter(None, map(stmt.first, toks)),
                             key=snd)
         ret = []
         total = 0
-        for tok, freq in toks_freqs:
+        for i, (tok, freq) in enumerate(toks_freqs):
             if total + freq > r:
                 break
             total += freq
             ret.append(tok)
+            if k and i >= k:
+                break
         return ret
 
     def _has_freqs(self):

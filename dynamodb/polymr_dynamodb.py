@@ -1,17 +1,16 @@
-import os
 import time
 import operator
+import concurrent.futures
+from itertools import repeat
 from itertools import count as counter
-from collections import namedtuple
-from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor
 
 import polymr.storage
-from polymr.storage import loads
 from polymr.storage import dumps
 from toolz import partition_all
 from boto.dynamodb2.fields import HashKey, RangeKey
 from boto.exception import JSONResponseError
-from boto.dynamodb2.exceptions import ValidationException
 from boto.dynamodb2.exceptions import ItemNotFound
 from boto.dynamodb2.table import Table
 from boto.dynamodb2.types import NUMBER
@@ -32,7 +31,7 @@ class BackendError(EnvironmentError):
 
 
 class DynamoDBBackend(polymr.storage.LevelDBBackend):
-    BLOCK_SIZE = 1024*400
+    BLOCK_SIZE = 1024*399
     SCHEMA = [HashKey('primary', data_type=BINARY),
               RangeKey('secondary', data_type=NUMBER)]
 
@@ -84,8 +83,9 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
         return cls(parsed.path.split('/')[-1], featurizer_name=featurizer_name)
 
     def get_featurizer_name(self):
-        return self.table.get_item(primary=b'Featurizer', secondary=0,
-                                   consistent=self.consistent)['name']
+        item = self.table.get_item(primary=b'Featurizer', secondary=0,
+                                   consistent=self.consistent)
+        return item['name'].decode()
 
     def save_featurizer_name(self, name):
         self.table.put_item(data={'primary': b'Featurizer', 'secondary': 0,
@@ -109,10 +109,13 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
         self.save_freqs(dict(toks_cnts))
 
     def save_freqs(self, freqs_dict):
-        with self.table.batch_write() as batch:
-            for tok, freq in freqs_dict.items():
-                batch.put_item(data={'primary': b'freq:'+tok, 'freq': freq,
-                                     'secondary': 0}, overwrite=True)
+        chunks = partition_all(25, freqs_dict.items())
+        for chunk in chunks:
+            with self.table.batch_write() as batch:
+                for tok, freq in chunk:
+                    batch.put_item(data={'primary': b'freq:'+tok,
+                                         'freq': freq, 'secondary': 0}, 
+                                   overwrite=True)
 
     def find_least_frequent_tokens(self, toks, r, k=None):
         keys=[{'primary': b'freq:'+tok, 'secondary': 0} for tok in toks]
@@ -141,7 +144,7 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
                                   'secondary': 0}, overwrite=True)
 
     def _load_token_blob(self, name):
-        items = self.table.query_2(primary__eq=name)
+        items = self.table.query_2(primary__eq=name or b'null')
         blob = bytearray()
         for item in items:
             blob.extend(item['bytes'])
@@ -151,13 +154,42 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
         saver = batch or self.table
         blob = dumps({b"idxs": record_ids, b"compacted": compacted})
         for i, chunk in enumerate(_partition_bytes(blob, self.BLOCK_SIZE)):
-            saver.put_item(data={'primary': name, 'secondary': i, 'bytes': chunk},
-                           overwrite=True)
+            saver.put_item(data={'primary': name or b'null', 'secondary': i, 
+                                 'bytes': chunk}, overwrite=True)
 
-    def save_tokens(self, names_ids_compacteds, chunk_size=None):
-        with self.table.batch_write() as batch:
-            for name, record_ids, compacted in names_ids_compacteds:
-                self.save_token(name, record_ids, compacted, batch=batch)
+    def _save_multithreaded(self, saver_func, chunks, threads):
+        tot = 0
+        tables = [Table(self.table_name, schema=self.SCHEMA) for _ in range(threads)]
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            not_done = set(executor.submit(saver_func, chunk, tables[i], i)
+                           for i, chunk in zip(range(threads), chunks))
+            while True:
+                done, not_done = concurrent.futures.wait(
+                    not_done, return_when=FIRST_COMPLETED)
+                for future in done:
+                    i, cnt = future.result()
+                    tot += cnt
+                    try:
+                        chunk = next(chunks)
+                    except StopIteration:
+                        for future in concurrent.futures.as_completed(not_done):
+                            _, cnt = future.result()
+                            tot += cnt
+                        return tot
+                    not_done.add(executor.submit(saver_func, chunk, tables[i], i))
+
+    def save_tokens(self, names_ids_compacteds, chunk_size=25, threads=1):
+        def _save(chunk, table, i):
+            with table.batch_write() as batch:
+                for name, record_ids, compacted in chunk:
+                    self.save_token(name, record_ids, compacted, batch=batch)
+            return i, 0
+
+        chunks = partition_all(chunk_size, names_ids_compacteds)
+        if threads > 1:
+            return self._save_multithreaded(_save, chunks, threads)
+        else:
+            return sum(map(_save, chunks, repeat(self.table), 0))
 
     def _load_record_blob(self, idx):
         item = self.table.get_item(primary=str(idx).encode(), secondary=0,
@@ -186,11 +218,22 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
             self.save_rowcount(idx)
         return idx
 
-    def save_records(self, idx_recs, record_db=None, chunk_size=None):
-        with self.table.batch_write() as batch:
-            for i, (idx, rec) in enumerate(idx_recs, 1):
-                self.save_record(rec, idx=idx, save_rowcount=False, batch=batch)
-        return i
+    def save_records(self, idx_recs, record_db=None, chunk_size=25, threads=1):
+        def _save(chunk, table, i):
+            cnt = counter()
+            with table.batch_write() as batch:
+                for idx, rec in chunk:
+                    self.save_record(rec, idx=idx, save_rowcount=False, 
+                                     batch=batch)
+                    next(cnt)
+            return i, next(cnt)
+
+        chunks = partition_all(chunk_size, idx_recs)
+        if threads <= 1:
+            return self._save_multithreaded(_save, chunks, threads)
+        else:
+            return sum(cnt for _, cnt 
+                       in map(_save, chunks, repeat(self.table), 0))
 
     def delete_record(self, idx):
         self.table.delete_item(primary=str(idx).encode(), secondary=0)

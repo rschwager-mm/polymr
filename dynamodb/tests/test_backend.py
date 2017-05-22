@@ -1,7 +1,4 @@
-import os
-import shutil
 import random
-import tempfile
 import unittest
 
 from polymr.record import Record
