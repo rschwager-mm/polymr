@@ -98,14 +98,17 @@ class RocksDBBackend(LevelDBBackend):
             raise KeyError
         return blob
 
-    def get_records(self, idxs):
-        keys = list(map(str.encode, map(str, idxs)))
-        vals = self.record_db.multi_get(keys)
-        for key in keys:
-            blob = vals[key]
-            if blob is None:
-                raise KeyError
-            yield self._get_record(blob)
+    def get_records(self, idxs, chunk_size=1000):
+        keys = map(str.encode, map(str, idxs))
+        chunks = partition_all(chunk_size, keys)
+        for chunk in chunks:
+            chunk = list(chunk)
+            vals = self.record_db.multi_get(chunk)
+            for key in chunk:
+                blob = vals[key]
+                if blob is None:
+                    raise KeyError
+                yield self._get_record(blob)
 
     def save_record(self, rec, idx=None, save_rowcount=True):
         idx = self.get_rowcount() + 1 if idx is None else idx

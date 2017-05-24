@@ -37,13 +37,11 @@ class Index(object):
 
     def _search(self, query, r, n, k):
         toks = [b64encode(t) for t in self.featurizer(query)]
-        toks = self.backend.find_least_frequent_tokens(toks, r)
+        toks = self.backend.find_least_frequent_tokens(toks, r, k)
         r_map = Counter()
         for i, tok in enumerate(toks, 1):
             rng = self.backend.get_token(tok)
             r_map.update(rng)
-            if k and i >= k: #  try to get k token mappings
-                break
         top_ids = map(first, r_map.most_common(n))
         return list(top_ids)
 
@@ -194,7 +192,7 @@ class ParallelIndex(Index):
     def _search(self, query_id, query, r, n, k):
         which_worker = next(self.worker_rot8)
         toks = [b64encode(t) for t in self.featurizer(query)]
-        toks = self.backend.find_least_frequent_tokens(toks, r)
+        toks = self.backend.find_least_frequent_tokens(toks, r, k)
         if not toks:
             self.work_qs[which_worker].put(
                 (query_id, 'count_tokens', [query_id, len(toks), None, n])
@@ -204,8 +202,6 @@ class ParallelIndex(Index):
             self.work_qs[which_worker].put(
                 (query_id, 'count_tokens', [query_id, len(toks), blob, n])
             )
-            if k and i >= k:
-                break
         return which_worker
 
     def _scored_records(self, query_id, record_ids, query, limit):
