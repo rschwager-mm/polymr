@@ -9,6 +9,7 @@ from heapq import merge as _merge
 from base64 import b64encode
 from itertools import groupby
 from itertools import repeat
+from itertools import chain
 from collections import defaultdict
 from operator import itemgetter
 
@@ -22,6 +23,7 @@ from . import featurizers
 
 fst = itemgetter(0)
 snd = itemgetter(1)
+cat = chain.from_iterable
 
 logger = logging.getLogger(__name__)
 
@@ -89,23 +91,25 @@ def _mergefeatures(tmpnames, toobig):
         kmer_ids = _merge(*map(_tmpparse_split, fileobjs), key=fst)
         kmer_ids = iter(x for x in kmer_ids if x[0] not in toobig)
         for kmer, kmer_chunks in groupby(kmer_ids, key=fst):
-            rng, compacted = util.merge_to_range(map(snd, kmer_chunks))
-            yield kmer, rng, compacted
+            yield kmer, list(cat(map(snd, kmer_chunks)))
 
 
-def parse_and_save_records(input_records, backend):
-    batches = partition_all(5000, enumerate(input_records))
-    for idxs_recs in batches:
-        backend.save_records(idxs_recs)
-        for i, rec in idxs_recs:
-            yield i, rec._replace(data=[])
-    backend.save_rowcount(i + 1)
+def records(input_records, backend):
+    rowcount = backend.save_records(enumerate(input_records))
+    backend.save_rowcount(rowcount)
+
+
+def _parse_and_save_records(input_records, backend):
+    records(input_records, backend)
+    cnt = backend.get_rowcount()
+    for i, rec in enumerate(backend.get_records(range(0, cnt))):
+        yield i, rec._replace(data=[])
 
 
 def create(input_records, nproc, chunksize, backend,
            tmpdir="/tmp", featurizer_name='default'):
     pool = multiprocessing.Pool(nproc, _initializer, (tmpdir,))
-    recs = parse_and_save_records(input_records, backend)
+    recs = _parse_and_save_records(input_records, backend)
     chunks = partition_all(chunksize, recs)
     tmpnames = pool.imap_unordered(
         _ef_worker, zip(chunks, repeat(featurizer_name)), chunksize=1)
@@ -123,11 +127,6 @@ def create(input_records, nproc, chunksize, backend,
     for tmpname in tmpnames:
         os.remove(tmpname)
     backend.save_featurizer_name(featurizer_name)
-
-
-def records(input_records, backend):
-    rowcount = backend.save_records(enumerate(input_records))
-    backend.save_rowcount(rowcount)
 
 
 class CLI:
