@@ -1,4 +1,5 @@
 import os
+from array import array
 from itertools import count as counter
 from collections import defaultdict
 
@@ -75,31 +76,25 @@ class RocksDBBackend(LevelDBBackend):
             raise KeyError
         return blob
 
-    def save_token(self, name, record_ids, compacted):
-        self.feature_db.put(
-            name,
-            dumps({b"idxs": record_ids, b"compacted": compacted})
-        )
+    def save_token(self, name, record_ids):
+        self.feature_db.put(name, array("L", record_ids).tobytes())
 
     def save_tokens(self, names_ids_compacteds, chunk_size=5000):
         chunks = partition_all(chunk_size, names_ids_compacteds)
         for chunk in chunks:
             batch = rocksdb.WriteBatch()
             for name, record_ids, compacted in chunk:
-                batch.put(
-                    name,
-                    dumps({b"idxs": record_ids, b"compacted": compacted})
-                )
+                batch.put(name, array("L", record_ids).tobytes())
             self.feature_db.write(batch)
 
     def _load_record_blob(self, idx):
-        blob = self.record_db.get(str(idx).encode())
+        blob = self.record_db.get(array("L", (idx,)).tobytes())
         if blob is None:
             raise KeyError
         return blob
 
     def get_records(self, idxs, chunk_size=1000):
-        keys = map(str.encode, map(str, idxs))
+        keys = iter(array("L", (idx,)).tobytes() for idx in idxs)
         chunks = partition_all(chunk_size, keys)
         for chunk in chunks:
             chunk = list(chunk)
@@ -112,8 +107,7 @@ class RocksDBBackend(LevelDBBackend):
 
     def save_record(self, rec, idx=None, save_rowcount=True):
         idx = self.get_rowcount() + 1 if idx is None else idx
-        self.record_db.put(str(idx).encode(),
-                           dumps(rec))
+        self.record_db.put(array("L", (idx,)).tobytes(), dumps(rec))
         if save_rowcount is True:
             self.save_rowcount(idx)
         return idx
@@ -124,16 +118,13 @@ class RocksDBBackend(LevelDBBackend):
         for chunk in chunks:
             batch = rocksdb.WriteBatch()
             for idx, rec in chunk:
-                batch.put(
-                    str(idx).encode(),
-                    dumps(rec)
-                )
+                batch.put(array("L", (idx,)).tobytes(), dumps(rec))
                 next(cnt)
             self.record_db.write(batch)
         return next(cnt)
 
     def delete_record(self, idx):
-        self.record_db.delete(str(idx).encode())
+        self.record_db.delete(array("L", (idx,)).tobytes())
 
 
 polymr.storage.backends['rocksdb'] = RocksDBBackend

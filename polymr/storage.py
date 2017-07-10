@@ -416,7 +416,7 @@ class LevelDBBackend(AbstractBackend):
         return next(cnt)
 
     def delete_record(self, idx):
-        self.record_db.Delete(str(idx).encode())
+        self.record_db.Delete(array("L", (idx,)).tobytes())
 
 
 
