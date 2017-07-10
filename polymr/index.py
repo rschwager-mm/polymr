@@ -138,6 +138,11 @@ class CLI:
         (["-i", "--input"], {
             "help": "Defaults to stdin"
         }),
+        (["-r", "--reader"], {
+            "help": "How to parse input. Defaults to csv.",
+            "choices": record.readers,
+            "default": "csv"
+        }),
         (["-n", "--parallel"], {
             "type": int,
             "default": 1,
@@ -177,9 +182,10 @@ class CLI:
             parser.print_help()
             sys.exit(1)
 
+        record_parser = record.readers[args.reader]
         backend = storage.parse_url(args.backend)
         with util.openfile(args.input or sys.stdin) as inp:
-            recs = record.from_csv(
+            recs = record_parser(
                 inp,
                 searched_fields_idxs=sidxs,
                 pk_field_idx=args.primary_key,

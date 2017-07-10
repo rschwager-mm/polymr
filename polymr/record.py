@@ -58,3 +58,19 @@ def from_csv(f, searched_fields_idxs=None, pk_field_idx=None,
     rows = csv.reader(f)
     return _from_general(rows, searched_fields_idxs,
                          pk_field_idx, include_data)
+
+
+def from_psv(f, searched_fields_idxs=None, pk_field_idx=None,
+             include_data=True):
+    def _rows():
+        for line in f:
+            row = line.strip()
+            if row:
+                yield row.split('|')
+
+    return _from_general(_rows(), searched_fields_idxs,
+                         pk_field_idx, include_data)
+
+
+readers = dict(csv=from_csv,
+               psv=from_psv)
