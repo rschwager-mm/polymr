@@ -100,10 +100,12 @@ def records(input_records, backend):
 
 
 def _parse_and_save_records(input_records, backend):
-    records(input_records, backend)
-    cnt = backend.get_rowcount()
-    for i, rec in enumerate(backend.get_records(range(0, cnt))):
-        yield i, rec._replace(data=[])
+    batches = partition_all(5000, enumerate(input_records))
+    for idxs_recs in batches:
+        backend.save_records(idxs_recs)
+        for i, rec in idxs_recs:
+            yield i, rec._replace(data=[])
+    backend.save_rowcount(i + 1)
 
 
 def create(input_records, nproc, chunksize, backend,
@@ -123,7 +125,8 @@ def create(input_records, nproc, chunksize, backend,
     backend.save_freqs({k: v for k, v in tokfreqs.items() if k not in toobig})
     del tokfreqs
     tokens = _mergefeatures(tmpnames, toobig)
-    backend.save_tokens(tokens)
+    for name, ids in tokens:
+        backend.save_token(name, ids)
     for tmpname in tmpnames:
         os.remove(tmpname)
     backend.save_featurizer_name(featurizer_name)
