@@ -179,14 +179,14 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
                         return tot
                     not_done.add(executor.submit(saver_func, chunk, tables[i], i))
 
-    def save_tokens(self, names_ids_compacteds, chunk_size=25, threads=1):
+    def save_tokens(self, names_ids, chunk_size=25, threads=1):
         def _save(chunk, table, i):
             with table.batch_write() as batch:
-                for name, record_ids, compacted in chunk:
-                    self.save_token(name, record_ids, compacted, batch=batch)
+                for name, record_ids in chunk:
+                    self.save_token(name, record_ids, batch=batch)
             return i, 0
 
-        chunks = partition_all(chunk_size, names_ids_compacteds)
+        chunks = partition_all(chunk_size, names_ids)
         if threads > 1:
             return self._save_multithreaded(_save, chunks, threads)
         else:

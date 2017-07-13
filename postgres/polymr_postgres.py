@@ -226,13 +226,13 @@ class PostgresBackend(AbstractBackend):
                     else:
                         stmt(tok_id, record_id)
 
-    def save_tokens(self, names_ids_compacteds):
+    def save_tokens(self, names_ids):
         stmt = self._conn.prepare("COPY polymr_feature_record_map FROM STDIN")
         ids = self._conn.query.chunks("SELECT tok, id FROM polymr_features")
         tok_cache = dict(cat(ids))
 
         def _rows():
-            for name, record_ids, compatcted in names_ids_compacteds:
+            for name, record_ids in names_ids:
                 for record_id in record_ids:
                     tok_id = tok_cache[name]
                     if type(record_id) is list:

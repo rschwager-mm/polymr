@@ -79,11 +79,11 @@ class RocksDBBackend(LevelDBBackend):
     def save_token(self, name, record_ids):
         self.feature_db.put(name, array("L", record_ids).tobytes())
 
-    def save_tokens(self, names_ids_compacteds, chunk_size=5000):
-        chunks = partition_all(chunk_size, names_ids_compacteds)
+    def save_tokens(self, names_ids, chunk_size=5000):
+        chunks = partition_all(chunk_size, names_ids)
         for chunk in chunks:
             batch = rocksdb.WriteBatch()
-            for name, record_ids, compacted in chunk:
+            for name, record_ids in chunk:
                 batch.put(name, array("L", record_ids).tobytes())
             self.feature_db.write(batch)
 
