@@ -48,15 +48,9 @@ class TestRocksDBBackend(unittest.TestCase):
         db = self._get_db()
         tok = b"abc"
         records_simple = [1,2,3]
-        db.save_token(tok, records_simple, False)
+        db.save_token(tok, records_simple)
         rng = db.get_token(tok)
-        self.assertEqual(records_simple, rng)
-        tok = b"bcd"
-        records_cmpct = [1,2,[3,6],7]
-        db.save_token(tok, records_cmpct, True)
-        rng = db.get_token(tok)
-        self.assertNotEqual(records_cmpct, rng)
-        self.assertEqual(rng, list(range(1,8)))
+        self.assertEqual(records_simple, list(rng))
 
     def test_get_set_records(self):
         db = self._get_db()
@@ -69,3 +63,6 @@ class TestRocksDBBackend(unittest.TestCase):
         self.assertEqual(r1.pk, r1_db.pk)
         self.assertEqual(r2.fields, r2_db.fields)
         self.assertEqual(r2.pk, r2_db.pk)
+
+if __name__ == '__main__':
+    unittest.main()

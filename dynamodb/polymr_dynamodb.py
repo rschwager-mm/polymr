@@ -1,6 +1,7 @@
 import time
 import operator
 import concurrent.futures
+from array import array
 from itertools import repeat
 from itertools import count as counter
 from concurrent.futures import FIRST_COMPLETED
@@ -63,7 +64,7 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
         self.table = Table.create(
             self.table_name, 
             schema=self.SCHEMA,
-            throughput=dict(read=25, write=25)
+            throughput=dict(read=25, write=2000)
         )
         for _ in range(100):
             try:
@@ -150,9 +151,9 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
             blob.extend(item['bytes'])
         return blob
 
-    def save_token(self, name, record_ids, compacted, batch=None):
+    def save_token(self, name, record_ids, batch=None):
         saver = batch or self.table
-        blob = dumps({b"idxs": record_ids, b"compacted": compacted})
+        blob = array("L", record_ids).tobytes() 
         for i, chunk in enumerate(_partition_bytes(blob, self.BLOCK_SIZE)):
             saver.put_item(data={'primary': name or b'null', 'secondary': i, 
                                  'bytes': chunk}, overwrite=True)
@@ -189,7 +190,7 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
         if threads > 1:
             return self._save_multithreaded(_save, chunks, threads)
         else:
-            return sum(map(_save, chunks, repeat(self.table), 0))
+            return sum(map(_save, chunks, repeat(self.table), repeat(0)))
 
     def _load_record_blob(self, idx):
         item = self.table.get_item(primary=str(idx).encode(), secondary=0,
@@ -212,8 +213,9 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
     def save_record(self, rec, idx=None, save_rowcount=True, batch=None):
         idx = self.get_rowcount() + 1 if idx is None else idx
         saver = batch or self.table
-        saver.put_item(data={'primary': str(idx).encode(), 'secondary': 0,
-                             'bytes': dumps(rec)}, overwrite=True)
+        saver.put_item(data={'primary': array("L", (idx,)).tobytes(), 
+                             'secondary': 0, 'bytes': dumps(rec)}, 
+                       overwrite=True)
         if save_rowcount is True:
             self.save_rowcount(idx)
         return idx
@@ -229,11 +231,11 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
             return i, next(cnt)
 
         chunks = partition_all(chunk_size, idx_recs)
-        if threads <= 1:
+        if threads > 1:
             return self._save_multithreaded(_save, chunks, threads)
         else:
             return sum(cnt for _, cnt 
-                       in map(_save, chunks, repeat(self.table), 0))
+                       in map(_save, chunks, repeat(self.table), repeat(0)))
 
     def delete_record(self, idx):
         self.table.delete_item(primary=str(idx).encode(), secondary=0)
