@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import polymr.storage
 from polymr.storage import dumps
+from toolz import count
 from toolz import partition_all
 from boto.dynamodb2.fields import HashKey, RangeKey
 from boto.exception import JSONResponseError
@@ -190,7 +191,7 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
         if threads > 1:
             return self._save_multithreaded(_save, chunks, threads)
         else:
-            return sum(map(_save, chunks, repeat(self.table), repeat(0)))
+            return count(map(_save, chunks, repeat(self.table), repeat(0)))
 
     def _load_record_blob(self, idx):
         item = self.table.get_item(primary=str(idx).encode(), secondary=0,
@@ -234,8 +235,7 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
         if threads > 1:
             return self._save_multithreaded(_save, chunks, threads)
         else:
-            return sum(cnt for _, cnt 
-                       in map(_save, chunks, repeat(self.table), repeat(0)))
+            return count(map(_save, chunks, repeat(self.table), repeat(0)))
 
     def delete_record(self, idx):
         self.table.delete_item(primary=str(idx).encode(), secondary=0)

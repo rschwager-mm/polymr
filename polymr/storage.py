@@ -36,6 +36,9 @@ def copy(backend_from, backend_to, droptop=None,
     if threads is not None:
         save_records = partial(backend_to.save_records, threads=threads)
         save_tokens = partial(backend_to.save_tokens, threads=threads)
+    else:
+        save_records = backend_to.save_records
+        save_tokens = backend_to.save_tokens
     if skip_copy_records is False:
         cnt = backend_from.get_rowcount()
         recs = backend_from.get_records(range(0, cnt))
