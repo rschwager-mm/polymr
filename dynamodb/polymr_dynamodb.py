@@ -194,15 +194,15 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
             return count(map(_save, chunks, repeat(self.table), repeat(0)))
 
     def _load_record_blob(self, idx):
-        item = self.table.get_item(primary=str(idx).encode(), secondary=0,
+        item = self.table.get_item(primary=array("L", (idx,)).tobytes(), secondary=0,
                                    consistent=self.consistent)
-        if item or 'bytes' not in item:
+        if item is None or 'bytes' not in item:
             raise KeyError
         return item['bytes']
 
     def get_records(self, idxs):
         items = self.table.batch_get(
-            keys=[{'primary': str(idx).encode(), 'secondary': 0}
+            keys=[{'primary': array("L", (idx,)).tobytes(), 'secondary': 0}
                   for idx in idxs]
         )
         for item in items:
@@ -238,7 +238,7 @@ class DynamoDBBackend(polymr.storage.LevelDBBackend):
             return count(map(_save, chunks, repeat(self.table), repeat(0)))
 
     def delete_record(self, idx):
-        self.table.delete_item(primary=str(idx).encode(), secondary=0)
+        self.table.delete_item(primary=array("L", (idx,)).tobytes(), secondary=0)
 
 
 polymr.storage.backends['dynamodb'] = DynamoDBBackend
