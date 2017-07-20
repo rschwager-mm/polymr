@@ -104,11 +104,11 @@ class PostgresBackend(AbstractBackend):
         self._conn.execute('DROP TABLE polymr_feature_record_map')
 
     def get_featurizer_name(self):
-        ress = self._conn.query("SELECT value FROM polymr_settings"
-                                " WHERE name = 'featurizer'")
+        ress = self._conn.query.first("SELECT value FROM polymr_settings"
+                                      " WHERE name = 'featurizer'")
         if not ress:
             raise KeyError
-        return ress[0]
+        return ress
 
     def save_featurizer_name(self, name):
         stmt = self._conn.prepare(
@@ -171,9 +171,9 @@ class PostgresBackend(AbstractBackend):
         return self.update_freqs(freqs_dict.items())
 
     def get_rowcount(self):
-        return self._conn.query.first(
+        return int(self._conn.query.first(
             "SELECT reltuples FROM pg_class"
-            " WHERE oid = 'polymr_records'::regclass")
+            " WHERE oid = 'polymr_records'::regclass"))
 
     def increment_rowcount(self, cnt):
         pass
@@ -226,13 +226,13 @@ class PostgresBackend(AbstractBackend):
                     else:
                         stmt(tok_id, record_id)
 
-    def save_tokens(self, names_ids_compacteds):
+    def save_tokens(self, names_ids):
         stmt = self._conn.prepare("COPY polymr_feature_record_map FROM STDIN")
         ids = self._conn.query.chunks("SELECT tok, id FROM polymr_features")
         tok_cache = dict(cat(ids))
 
         def _rows():
-            for name, record_ids, compatcted in names_ids_compacteds:
+            for name, record_ids in names_ids:
                 for record_id in record_ids:
                     tok_id = tok_cache[name]
                     if type(record_id) is list:
@@ -266,6 +266,14 @@ class PostgresBackend(AbstractBackend):
         for idx in idxs:
             yield self._get_record(idx, stmt)
 
+    def update_record(self, rec, idx):
+        stmt = self._conn.prepare(
+            "update polymr_records set (fields, pk, data) "
+            "= ($1, $2, $3) where id = $4"
+        )
+        with self._conn.xact():
+            stmt.first(dumps(rec.fields), str(rec.pk), dumps(rec.data), idx)
+
     def save_record(self, rec, idx=None, save_rowcount=True):
         stmt = self._conn.prepare(
             'INSERT INTO polymr_records VALUES (DEFAULT, $1, $2, $3)'
@@ -287,6 +295,7 @@ class PostgresBackend(AbstractBackend):
 
     def delete_record(self, idx):
         self._conn.prepare('DELETE from polymr_records WHERE id = $1')(idx)
+        self._conn.prepare('DELETE from polymr_feature_record_map WHERE id_rec = $1')(idx)
 
 
 polymr.storage.backends['postgres'] = PostgresBackend

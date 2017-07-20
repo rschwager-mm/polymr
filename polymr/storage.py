@@ -1,11 +1,12 @@
 import os
 import logging
 import operator
-from collections import defaultdict
+from array import array
 from abc import ABCMeta
 from abc import abstractmethod
-from itertools import count as counter
 from functools import partial
+from collections import defaultdict
+from itertools import count as counter
 from urllib.parse import urlparse
 
 import leveldb
@@ -35,6 +36,9 @@ def copy(backend_from, backend_to, droptop=None,
     if threads is not None:
         save_records = partial(backend_to.save_records, threads=threads)
         save_tokens = partial(backend_to.save_tokens, threads=threads)
+    else:
+        save_records = backend_to.save_records
+        save_tokens = backend_to.save_tokens
     if skip_copy_records is False:
         cnt = backend_from.get_rowcount()
         recs = backend_from.get_records(range(0, cnt))
@@ -60,8 +64,7 @@ def copy(backend_from, backend_to, droptop=None,
     def _rows():
         for i, tok in enumerate(freqs):
             idxs = backend_from.get_token(tok)
-            rngs, compacted = merge_to_range([idxs])
-            yield (tok, rngs, compacted)
+            yield (tok, idxs)
             if _isinfo:
                 n_bins = len(freqs) // 100
                 if (i % n_bins) == 0:
@@ -173,33 +176,25 @@ class AbstractBackend(metaclass=ABCMeta):
         ...
 
     @abstractmethod
-    def save_token(self, name, record_ids, compacted):
+    def save_token(self, name, record_ids):
         """Save the list of records containing a named token
 
         :param name: The token
         :type name: bytes
 
         :param record_ids: The list of record ids containing the token
-        :type record_ids: list of int (or list-of-list-of-int if
-          compacted is True)
-
-        :param compacted: Whether the records list is compacted into
-          ranges. If True, ``records`` is expected to be a mixed list
-          of ints and list-of-int ranges. E.g. ``records = [1, 3
-          [5,10], 12]``
-        :type compacted: bool
+        :type record_ids: iterable of int
 
         """
         ...
 
     @abstractmethod
-    def save_tokens(self, names_ids_compacteds):
+    def save_tokens(self, names_ids):
         """Save many tokens in bulk. See ``save_token``.
 
-        :param names_ids_compacteds: A three-part tuple of token, the
-          ids corresponding to the token, and a boolean indicating
-          whether the id list is compacted to ranges.
-        :type names_ids_compacteds: tuple
+        :param names_ids: A iterable of two-part tuples: the token,
+          and the ids corresponding to the token
+        :type names_ids: iterable of tuple
 
         """
         ...
@@ -353,16 +348,7 @@ class LevelDBBackend(AbstractBackend):
 
     @staticmethod
     def _get_token(blob):
-        ret = loads(blob)
-        if ret[b'compacted'] is False:
-            return ret[b'idxs']
-        idxs = []
-        for idx in ret[b'idxs']:
-            if type(idx) is list:
-                idxs.extend(list(range(idx[0], idx[1]+1)))
-            else:
-                idxs.append(idx)
-        return idxs
+        return array("L", blob)
 
     def _load_token_blob(self, name):
         return self.feature_db.Get(name)
@@ -377,30 +363,22 @@ class LevelDBBackend(AbstractBackend):
         except KeyError:
             # possible the token is new
             curidxs = []
-        curidxs, compacted = merge_to_range([record_ids, curidxs])
-        self.save_token(name, curidxs, compacted)
+        self.save_token(name, curidxs+record_ids)
 
     def drop_records_from_token(self, name, bad_record_ids):
         curidxs = self.get_token(name)
         to_keep = list(set(curidxs)-set(bad_record_ids))
-        to_keep, compacted = merge_to_range(to_keep)
-        self.save_token(name, to_keep, compacted)
+        self.save_token(name, to_keep)
 
-    def save_token(self, name, record_ids, compacted):
-        self.feature_db.Put(
-            name,
-            dumps({b"idxs": record_ids, b"compacted": compacted})
-        )
+    def save_token(self, name, record_ids):
+        self.feature_db.Put(name, array("L", record_ids).tobytes())
 
-    def save_tokens(self, names_ids_compacteds, chunk_size=5000):
-        chunks = partition_all(chunk_size, names_ids_compacteds)
+    def save_tokens(self, names_ids, chunk_size=5000):
+        chunks = partition_all(chunk_size, names_ids)
         for chunk in chunks:
             batch = leveldb.WriteBatch()
-            for name, record_ids, compacted in chunk:
-                batch.Put(
-                    name,
-                    dumps({b"idxs": record_ids, b"compacted": compacted})
-                )
+            for name, record_ids in chunk:
+                batch.Put(name, array("L", record_ids).tobytes())
             self.feature_db.Write(batch)
 
     @staticmethod
@@ -411,7 +389,7 @@ class LevelDBBackend(AbstractBackend):
         return Record._make(rec)
 
     def _load_record_blob(self, idx):
-        return self.record_db.Get(str(idx).encode())
+        return self.record_db.Get(array("L", (idx,)).tobytes())
 
     def get_record(self, idx):
         blob = self._load_record_blob(idx)
@@ -424,8 +402,7 @@ class LevelDBBackend(AbstractBackend):
 
     def save_record(self, rec, idx=None, save_rowcount=True):
         idx = self.get_rowcount() + 1 if idx is None else idx
-        self.record_db.Put(str(idx).encode(),
-                           dumps(rec))
+        self.record_db.Put(array("L", (idx,)).tobytes(), dumps(rec))
         if save_rowcount is True:
             self.save_rowcount(idx)
         return idx
@@ -436,16 +413,13 @@ class LevelDBBackend(AbstractBackend):
         for chunk in chunks:
             batch = leveldb.WriteBatch()
             for idx, rec in chunk:
-                batch.Put(
-                    str(idx).encode(),
-                    dumps(rec)
-                )
+                batch.Put(array("L", (idx,)).tobytes(), dumps(rec))
                 next(cnt)
             self.record_db.Write(batch)
         return next(cnt)
 
     def delete_record(self, idx):
-        self.record_db.Delete(str(idx).encode())
+        self.record_db.Delete(array("L", (idx,)).tobytes())
 
 
 

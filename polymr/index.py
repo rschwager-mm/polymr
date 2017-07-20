@@ -9,6 +9,7 @@ from heapq import merge as _merge
 from base64 import b64encode
 from itertools import groupby
 from itertools import repeat
+from itertools import chain
 from collections import defaultdict
 from operator import itemgetter
 
@@ -22,6 +23,7 @@ from . import featurizers
 
 fst = itemgetter(0)
 snd = itemgetter(1)
+cat = chain.from_iterable
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +91,15 @@ def _mergefeatures(tmpnames, toobig):
         kmer_ids = _merge(*map(_tmpparse_split, fileobjs), key=fst)
         kmer_ids = iter(x for x in kmer_ids if x[0] not in toobig)
         for kmer, kmer_chunks in groupby(kmer_ids, key=fst):
-            rng, compacted = util.merge_to_range(map(snd, kmer_chunks))
-            yield kmer, rng, compacted
+            yield kmer, list(cat(map(snd, kmer_chunks)))
 
 
-def parse_and_save_records(input_records, backend):
+def records(input_records, backend):
+    rowcount = backend.save_records(enumerate(input_records))
+    backend.save_rowcount(rowcount)
+
+
+def _parse_and_save_records(input_records, backend):
     batches = partition_all(5000, enumerate(input_records))
     for idxs_recs in batches:
         backend.save_records(idxs_recs)
@@ -105,7 +111,7 @@ def parse_and_save_records(input_records, backend):
 def create(input_records, nproc, chunksize, backend,
            tmpdir="/tmp", featurizer_name='default'):
     pool = multiprocessing.Pool(nproc, _initializer, (tmpdir,))
-    recs = parse_and_save_records(input_records, backend)
+    recs = _parse_and_save_records(input_records, backend)
     chunks = partition_all(chunksize, recs)
     tmpnames = pool.imap_unordered(
         _ef_worker, zip(chunks, repeat(featurizer_name)), chunksize=1)
@@ -119,15 +125,11 @@ def create(input_records, nproc, chunksize, backend,
     backend.save_freqs({k: v for k, v in tokfreqs.items() if k not in toobig})
     del tokfreqs
     tokens = _mergefeatures(tmpnames, toobig)
-    backend.save_tokens(tokens)
+    for name, ids in tokens:
+        backend.save_token(name, ids)
     for tmpname in tmpnames:
         os.remove(tmpname)
     backend.save_featurizer_name(featurizer_name)
-
-
-def records(input_records, backend):
-    rowcount = backend.save_records(enumerate(input_records))
-    backend.save_rowcount(rowcount)
 
 
 class CLI:
@@ -138,6 +140,11 @@ class CLI:
         storage.backend_arg,
         (["-i", "--input"], {
             "help": "Defaults to stdin"
+        }),
+        (["-r", "--reader"], {
+            "help": "How to parse input. Defaults to csv.",
+            "choices": record.readers,
+            "default": "csv"
         }),
         (["-n", "--parallel"], {
             "type": int,
@@ -178,9 +185,10 @@ class CLI:
             parser.print_help()
             sys.exit(1)
 
+        record_parser = record.readers[args.reader]
         backend = storage.parse_url(args.backend)
         with util.openfile(args.input or sys.stdin) as inp:
-            recs = record.from_csv(
+            recs = record_parser(
                 inp,
                 searched_fields_idxs=sidxs,
                 pk_field_idx=args.primary_key,
