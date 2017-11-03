@@ -406,6 +406,8 @@ class LevelDBBackend(AbstractBackend):
             self.save_rowcount(idx)
         return idx
 
+    update_record = save_record
+
     def save_records(self, idx_recs, record_db=None, chunk_size=5000):
         chunks = partition_all(chunk_size, idx_recs)
         cnt = counter()
