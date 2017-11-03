@@ -9,6 +9,7 @@ from collections import Counter
 from collections import OrderedDict
 from collections import defaultdict
 from itertools import chain
+from itertools import zip_longest
 from itertools import cycle
 from operator import itemgetter
 
@@ -63,11 +64,12 @@ class Index(object):
             for s, rownum, rec in nsmallest(limit, scores_records, key=first)
         ]
 
-    def _save_records(self, records):
+    def _save_records(self, records, idxs=[]):
         completed = []
-        for rec in records:
+        for rec, i in zip_longest(records, idxs):
             try:
-                idx = self.backend.save_record(rec)
+                idx = (self.backend.save_record(rec) if i is None
+                       else self.backend.update_record(rec, i))
             except:
                 for idx in completed:
                     self.backend.delete_record(idx)
@@ -92,8 +94,8 @@ class Index(object):
                 self.backend.drop_records_from_token(tok, tokmap[tok])
             raise
 
-    def add(self, records):
-        idxs = list(self._save_records(records))
+    def add(self, records, idxs=[]):
+        idxs = list(self._save_records(records, idxs))
         tokmap = defaultdict(list)
         for idx, rec in zip(idxs, records):
             for tok in map(b64encode, self.featurizer(rec.fields)):
