@@ -14,7 +14,6 @@ import msgpack
 from toolz import partition_all
 
 from .record import Record
-from .util import merge_to_range
 
 logger = logging.getLogger(__name__)
 _isinfo = logger.isEnabledFor(logging.INFO)
@@ -29,7 +28,7 @@ def dumps(obj):
     return msgpack.packb(obj)
 
 
-def copy(backend_from, backend_to, droptop=None, 
+def copy(backend_from, backend_to, droptop=None,
          skip_copy_records=False, skip_copy_featurizer=False,
          skip_copy_freqs=False, skip_copy_tokens=False, threads=None):
     logger.debug("Copying from %s to %s", backend_from, backend_to)
@@ -319,7 +318,7 @@ class LevelDBBackend(AbstractBackend):
                 break
             total += freq
             ret.append(tok)
-            if k and i >= k: #  try to get k token mappings
+            if k and i >= k:  # try to get k token mappings
                 break
         return ret
 
@@ -420,7 +419,6 @@ class LevelDBBackend(AbstractBackend):
 
     def delete_record(self, idx):
         self.record_db.Delete(array("L", (idx,)).tobytes())
-
 
 
 backends = {"leveldb": LevelDBBackend}

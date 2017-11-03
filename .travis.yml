@@ -22,7 +22,7 @@ addons:
 before_script:
   - psql -c 'create database travis_ci_test;' -U postgres
 install:
-  - bash -c 'git clone https://github.com/facebook/rocksdb rocksdb_src && cd rocksdb_src && sudo make install-shared'
+  - bash -c 'mkdir rocksdb_src && wget https://github.com/facebook/rocksdb/archive/v5.5.5.tar.gz -O- | tar xvz -C rocksdb_src --strip-components 1 && cd rocksdb_src && sudo make install-shared'
   - bash -c 'echo "/usr/local/lib | sudo tee -a /etc/ld.so.conf.d/python.conf" && sudo ldconfig'
   - python setup.py install
   - bash -c 'cd postgres && python setup.py install'

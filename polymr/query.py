@@ -45,16 +45,18 @@ class Index(object):
         top_ids = map(first, r_map.most_common(n))
         return list(top_ids)
 
-    def _scored_records(self, record_ids, orig_query):
-        orig_features = score.features(orig_query)
+    def _scored_records(self, record_ids, orig_query,
+                        extract_func=score.features, score_func=score.hit):
+        orig_features = extract_func(orig_query)
         for rownum, r in zip(record_ids, self.backend.get_records(record_ids)):
-            s = score.hit(orig_features, score.features(r.fields))
+            s = score_func(orig_features, extract_func(r.fields))
             yield s, rownum, r
 
     def search(self, query, limit=defaults.limit, r=defaults.r, n=defaults.n,
-               k=None):
+               k=None, extract_func=score.features, score_func=score.hit):
         record_ids = self._search(query, r, n, k)
-        scores_records = self._scored_records(record_ids, query)
+        scores_records = self._scored_records(
+            record_ids, query, extract_func, score_func)
         return [
             {"fields": rec.fields, "pk": rec.pk, "score": s,
              "data": rec.data, "rownum": rownum}
@@ -127,14 +129,17 @@ class ParallelIndexWorker(multiprocessing.Process):
         else:
             return None
 
-    def _scores(self, blobs, orig_features):
+    def _scores(self, blobs, orig_features,
+                extract_func=score.features, score_func=score.hit):
         for rownum, blob in blobs:
             r = self.be_cls._get_record(blob)
-            s = score.hit(orig_features, score.features(r.fields))
+            s = score_func(orig_features, extract_func(r.fields))
             yield s, rownum, r
 
-    def _score_records(self, orig_features, limit, blobs):
-        scores_records = self._scores(blobs, orig_features)
+    def _score_records(self, orig_features, limit, blobs,
+                       extract_func=score.features, score_func=score.hit):
+        scores_records = self._scores(blobs, orig_features,
+                                      extract_func, score_func)
         return nsmallest(limit, scores_records, key=first)
 
     def run(self):
@@ -204,12 +209,14 @@ class ParallelIndex(Index):
             )
         return which_worker
 
-    def _scored_records(self, query_id, record_ids, query, limit):
+    def _scored_records(self, query_id, record_ids, query, limit,
+                        extract_func=score.features, score_func=score.hit):
         which_worker = next(self.worker_rot8)
-        orig_features = score.features(query)
+        orig_features = extract_func(query)
         blobs = [(i, self.backend._load_record_blob(i)) for i in record_ids]
         self.work_qs[which_worker].put(
-            (query_id, 'score_records', [orig_features, limit, blobs])
+            (query_id, 'score_records',
+             [orig_features, limit, blobs, extract_func, score_func])
         )
         return which_worker
 
@@ -220,12 +227,14 @@ class ParallelIndex(Index):
                 for s, rownum, rec in scores_recs]
 
     def search(self, query, limit=defaults.limit, r=defaults.r,
-               n=defaults.n, k=defaults.k):
+               n=defaults.n, k=defaults.k,
+               extract_func=score.features, score_func=score.hit):
         self.started = self._startup_workers()
         try:
             self._search(0, query, r, n, k)
             _, _, record_ids = self.result_q.get()
-            self._scored_records(0, record_ids, query, limit)
+            self._scored_records(0, record_ids, query, limit,
+                                 extract_func, score_func)
             _, _, scores_recs = self.result_q.get()
             return self._format_resultset(scores_recs)
         finally:
@@ -240,7 +249,7 @@ class ParallelIndex(Index):
             n_filled += 1
         logger.debug("Added %i tasks to work queues", n_filled)
 
-    def _searchmany(self, queries, limit, r, n, k):
+    def _searchmany(self, queries, limit, r, n, k, extract_func, score_func):
         self.to_do = OrderedDict(enumerate(queries))
         self.in_progress = {}
         send_later = {}  # query_id : search results
@@ -261,7 +270,8 @@ class ParallelIndex(Index):
             if meth == 'count_tokens':
                 logger.debug('count_tokens completed for query %s', query_id)
                 query = queries[query_id]
-                self._scored_records(query_id, ret, query, limit)
+                self._scored_records(query_id, ret, query, limit,
+                                     extract_func, score_func)
                 self.in_progress[query_id] = query
             elif meth == 'score_records':
                 logger.debug('score_records completed for query %s', query_id)
@@ -278,10 +288,12 @@ class ParallelIndex(Index):
                     n_sent += 1
 
     def searchmany(self, queries, limit=defaults.limit, r=defaults.r,
-                   n=defaults.n, k=defaults.k):
+                   n=defaults.n, k=defaults.k,
+                   extract_func=score.features, score_func=score.hit):
         self.started = self._startup_workers()
         try:
-            for result in self._searchmany(queries, limit, r, n, k):
+            for result in self._searchmany(queries, limit, r, n, k,
+                                           extract_func, score_func):
                 yield result
         finally:
             self.close(close_backend=False)

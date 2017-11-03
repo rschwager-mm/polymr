@@ -8,6 +8,7 @@ import polymr.index
 import polymr.storage
 import polymr.query
 import polymr.record
+import polymr.score
 
 to_index = StringIO("""01001,MA,DONNA,AGAWAM,WUCHERT,PO BOX 329,9799PNOVAY
 01007,MA,BERONE,BELCHERTOWN,BOARDWAY,135 FEDERAL ST,9799JA8CB5
@@ -23,6 +24,13 @@ to_index = StringIO("""01001,MA,DONNA,AGAWAM,WUCHERT,PO BOX 329,9799PNOVAY
 
 sample_query = ["01030","MELANI","PICKETT","18 PAUL REVERE DR"]
 sample_pk = "989960D48D"
+
+def custom_extract(fields):
+    return polymr.score.features(fields[:-1])
+
+
+def custom_score(features_a, features_b):
+    return polymr.score.hit(features_a, features_b) / 2
 
 
 class TestEndToEnd(unittest.TestCase):
@@ -52,13 +60,23 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(hit['pk'], sample_pk,
                          ("querying the index with an indexed record should "
                           "return that same record"))
-        
+
         tpyo = list(sample_query[0])
         tpyo[2], tpyo[3] = tpyo[3], tpyo[2]
         tpyo = "".join(tpyo)
         hit = index.search([tpyo]+sample_query[1:], limit=1)[0]
-        self.assertEqual(hit['pk'], sample_pk,"searches should survive typos")
-        
+        self.assertEqual(hit['pk'], sample_pk, "searches should survive typos")
+
+        noncustom_score = hit['score']
+        hit = index.search([tpyo]+sample_query[1:], limit=1,
+                           score_func=custom_score)[0]
+        self.assertEqual(hit['pk'], sample_pk)
+        self.assertEqual(hit['score'] * 2, noncustom_score)
+
+        hit = index.search([tpyo]+sample_query[1:], limit=1,
+                           extract_func=custom_extract)[0]
+        self.assertEqual(hit['pk'], sample_pk)
+
 
 class TestEndToEndParallel(unittest.TestCase):
     def setUp(self):
@@ -86,7 +104,7 @@ class TestEndToEndParallel(unittest.TestCase):
         self.assertEqual(hit['pk'], sample_pk,
                          ("querying the index with an indexed record should "
                           "return that same record"))
-        
+
         tpyo1 = list(sample_query[0])
         tpyo1[2], tpyo1[3] = tpyo1[3], tpyo1[2]
         tpyo1 = "".join(tpyo1)
@@ -95,11 +113,42 @@ class TestEndToEndParallel(unittest.TestCase):
         tpyo2 = "".join(tpyo2)
         results = index.searchmany([[tpyo1]+sample_query[1:],
                                     [tpyo2]+sample_query[1:]], limit=1)
+        noncustom_scores = []
         for result in results:
             hit = result[0]
+            noncustom_scores.append(hit['score'])
             self.assertEqual(hit['pk'], sample_pk,
                              "searches should survive typos")
-        
-        
+
+        # custom score function
+        results = index.searchmany([[tpyo1]+sample_query[1:],
+                                    [tpyo2]+sample_query[1:]],
+                                   score_func=custom_score, limit=1)
+        for i, result in enumerate(results):
+            hit = result[0]
+            self.assertEqual(hit['score'] * 2, noncustom_scores[i])
+            self.assertEqual(hit['pk'], sample_pk)
+
+        # custom extract function
+        results = index.searchmany([[tpyo1]+sample_query[1:],
+                                    [tpyo2]+sample_query[1:]],
+                                   extract_func=custom_extract, limit=1)
+        extract_scores = []
+        for result in results:
+            hit = result[0]
+            extract_scores.append(hit['score'])
+            self.assertEqual(hit['pk'], sample_pk)
+
+        # custom extract and custom score functions
+        results = index.searchmany([[tpyo1]+sample_query[1:],
+                                    [tpyo2]+sample_query[1:]],
+                                   extract_func=custom_extract,
+                                   score_func=custom_score, limit=1)
+        for i, result in enumerate(results):
+            hit = result[0]
+            self.assertEqual(hit['pk'], sample_pk)
+            self.assertEqual(hit['score'] * 2, extract_scores[i])
+
+
 if __name__ == '__main__':
     unittest.main()
