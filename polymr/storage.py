@@ -43,6 +43,7 @@ def copy(backend_from, backend_to, droptop=None,
         recs = backend_from.get_records(range(0, cnt))
         logger.info("Copying %i records", cnt)
         save_records(enumerate(recs))
+        backend_to.save_rowcount(backend_from.get_rowcount())
     if skip_copy_freqs is False:
         logger.info("Copying frequencies")
     if any((skip_copy_freqs is False,
@@ -358,11 +359,11 @@ class LevelDBBackend(AbstractBackend):
 
     def update_token(self, name, record_ids):
         try:
-            curidxs = self.get_token(name)
+            s = set(record_ids).union(self.get_token(name))
         except KeyError:
             # possible the token is new
-            curidxs = []
-        self.save_token(name, curidxs+record_ids)
+            s = []
+        self.save_token(name, s)
 
     def drop_records_from_token(self, name, bad_record_ids):
         curidxs = self.get_token(name)

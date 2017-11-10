@@ -113,7 +113,7 @@ class PostgresBackend(AbstractBackend):
     def save_featurizer_name(self, name):
         stmt = self._conn.prepare(
             'INSERT INTO polymr_settings VALUES ($1, $2)'
-            ' ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name;'
+            ' ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value;'
         )
         stmt('featurizer', name)
 
@@ -171,9 +171,7 @@ class PostgresBackend(AbstractBackend):
         return self.update_freqs(freqs_dict.items())
 
     def get_rowcount(self):
-        return int(self._conn.query.first(
-            "SELECT reltuples FROM pg_class"
-            " WHERE oid = 'polymr_records'::regclass"))
+        return self._conn.query.first("SELECT count(*) FROM polymr_records")
 
     def increment_rowcount(self, cnt):
         pass
@@ -289,13 +287,25 @@ class PostgresBackend(AbstractBackend):
         )
         rows = iter((dumps(rec.fields), str(rec.pk), dumps(rec.data))
                     for rec in map(snd, idx_recs))
-        chunks = partition_all(chunk_size, rows)
+        chunks = PartitionCounted(chunk_size, rows)
         with self._conn.xact():
             stmt.load_chunks(chunks)
+        return chunks.rows_sent
 
     def delete_record(self, idx):
         self._conn.prepare('DELETE from polymr_records WHERE id = $1')(idx)
         self._conn.prepare('DELETE from polymr_feature_record_map WHERE id_rec = $1')(idx)
+
+
+class PartitionCounted(object):
+    def __init__(self, chunksize, it):
+        self.chunks = partition_all(chunksize, it)
+        self.rows_sent = 0
+
+    def __iter__(self):
+        for chunk in self.chunks:
+            yield chunk
+            self.rows_sent += len(chunk)
 
 
 polymr.storage.backends['postgres'] = PostgresBackend
