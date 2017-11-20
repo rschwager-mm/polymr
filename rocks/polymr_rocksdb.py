@@ -17,7 +17,9 @@ class RocksDBBackend(LevelDBBackend):
                  featurizer_name=None,
                  feature_db=None,
                  record_db=None,
-                 read_only=False):
+                 read_only=False,
+                 rocksdb_options_records=None,
+                 rocksdb_options_features=None):
 
         self._freqs = None
         if feature_db is not None or record_db is not None:
@@ -30,13 +32,22 @@ class RocksDBBackend(LevelDBBackend):
         if create_if_missing and not os.path.exists(path):
             os.mkdir(path)
 
+        if rocksdb_options_records is None:
+            rocksdb_options_records = rocksdb.Options(
+                create_if_missing=create_if_missing
+            )
+        if rocksdb_options_features is None:
+            rocksdb_options_features = rocksdb.Options(
+                create_if_missing=create_if_missing
+            )
+
         self.feature_db = rocksdb.DB(
             os.path.join(path, "features"),
-            rocksdb.Options(create_if_missing=create_if_missing),
+            rocksdb_options_features,
             read_only=read_only)
         self.record_db = rocksdb.DB(
             os.path.join(path, "records"),
-            rocksdb.Options(create_if_missing=create_if_missing),
+            rocksdb_options_records,
             read_only=read_only)
         self.featurizer_name = featurizer_name
         if not self.featurizer_name:
