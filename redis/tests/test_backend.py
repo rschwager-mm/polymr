@@ -14,7 +14,7 @@ sys.path.append(os.path.join(here, "..", "..", "tests"))
 from test_storage import TestLevelDBBackend
 
 
-class TestRocksDBBackend(TestLevelDBBackend):
+class TestRedisBackend(TestLevelDBBackend):
 
     def _get_db(self, new=False):
         if self.db and not new:

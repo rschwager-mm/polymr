@@ -27,7 +27,7 @@ sample_query = ["01030","MELANI","PICKETT","18 PAUL REVERE DR"]
 sample_pk = "989960D48D"
 
 
-class TestEndToEndWithRocksDB(unittest.TestCase):
+class TestEndToEndWithRedis(unittest.TestCase):
     def setUp(self):
         self.workdir = tempfile.mkdtemp(suffix="polymrtest")
         self.db = polymr_redis.RedisBackend()
