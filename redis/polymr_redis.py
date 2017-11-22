@@ -1,3 +1,4 @@
+import operator
 from array import array
 from collections import defaultdict
 
@@ -8,6 +9,17 @@ from polymr.storage import LevelDBBackend
 from toolz import partition_all
 from toolz import valmap
 
+snd = operator.itemgetter(1)
+
+
+class FakeDict(object):
+    def __init__(self, iterable):
+        self.iterable = iterable
+
+    def items(self):
+        for k, v in self.iterable:
+            yield k, v
+
 
 class RedisBackend(LevelDBBackend):
     def __init__(self, host='localhost', port=6379, db=0,
@@ -16,7 +28,7 @@ class RedisBackend(LevelDBBackend):
         self.featurizer_name = featurizer_name
         self.r = redis.StrictRedis(host=host, port=port, db=db)
         if new is True:
-            self.r.flushdb()
+            self.destroy()
         if not self.featurizer_name:
             try:
                 self.featurizer_name = self.get_featurizer_name()
@@ -27,7 +39,7 @@ class RedisBackend(LevelDBBackend):
     @classmethod
     def from_urlparsed(cls, parsed, featurizer_name=None, read_only=None):
         path = parsed.path.strip("/") or 0
-        return cls(host=parsed.host, port=parsed.port, db=path,
+        return cls(host=parsed.hostname, port=parsed.port, db=path,
                    featurizer_name=featurizer_name)
 
     def close(self):
@@ -42,12 +54,30 @@ class RedisBackend(LevelDBBackend):
     def save_featurizer_name(self, name):
         self.r.set(b'featurizer', name)
 
+    def find_least_frequent_tokens(self, toks, r, k=None):
+        toks_freqs = [(tok, int(freq))
+                      for tok, freq in zip(toks, self.r.hmget(b'freqs', toks))
+                      if freq is not None]
+        total = 0
+        ret = []
+        for i, (tok, freq) in enumerate(sorted(toks_freqs, key=snd)):
+            if total + freq > r:
+                break
+            total += freq
+            ret.append(tok)
+            if k and i >= k:  # try to get k token mappings
+                break
+        return ret
+
     def get_freqs(self):
         return defaultdict(int, valmap(int, self.r.hgetall(b'freqs')))
 
-    def save_freqs(self, freqs_dict):
-        for k, v in freqs_dict.items():
-            self.r.hset(b"freqs", k, v)
+    def update_freqs(self, toks_cnts):
+        if type(toks_cnts) is not dict:
+            toks_cnts = FakeDict(toks_cnts)
+        self.r.hmset(b"freqs", toks_cnts)
+
+    save_freqs = update_freqs
 
     def get_rowcount(self):
         ret = self.r.get(b'rowcount')
@@ -113,6 +143,9 @@ class RedisBackend(LevelDBBackend):
 
     def delete_record(self, idx):
         self.r.delete(array("L", (idx,)).tobytes())
+
+    def destroy(self):
+        self.r.flushdb()
 
 
 polymr.storage.backends['redis'] = RedisBackend

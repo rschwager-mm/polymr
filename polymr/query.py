@@ -4,7 +4,6 @@ import logging
 import traceback
 import multiprocessing
 from heapq import nsmallest
-from base64 import b64encode
 from collections import Counter
 from collections import OrderedDict
 from collections import defaultdict
@@ -37,7 +36,7 @@ class Index(object):
         self.featurizer = featurizers.all[self.backend.featurizer_name]
 
     def _search(self, query, r, n, k):
-        toks = [b64encode(t) for t in self.featurizer(query)]
+        toks = self.featurizer(query)
         toks = self.backend.find_least_frequent_tokens(toks, r, k)
         r_map = Counter()
         for i, tok in enumerate(toks, 1):
@@ -98,7 +97,7 @@ class Index(object):
         idxs = list(self._save_records(records, idxs))
         tokmap = defaultdict(list)
         for idx, rec in zip(idxs, records):
-            for tok in map(b64encode, self.featurizer(rec.fields)):
+            for tok in self.featurizer(rec.fields):
                 tokmap[tok].append(idx)
         self._update_tokens_and_freqs(tokmap)
         return idxs
@@ -198,7 +197,7 @@ class ParallelIndex(Index):
 
     def _search(self, query_id, query, r, n, k):
         which_worker = next(self.worker_rot8)
-        toks = [b64encode(t) for t in self.featurizer(query)]
+        toks = self.featurizer(query)
         toks = self.backend.find_least_frequent_tokens(toks, r, k)
         if not toks:
             self.work_qs[which_worker].put(

@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 from gzip import GzipFile as CompressedFile
 from heapq import merge as _merge
 from base64 import b64encode
+from base64 import b64decode
 from itertools import groupby
 from itertools import repeat
 from itertools import chain
@@ -122,14 +123,16 @@ def create(input_records, nproc, chunksize, backend,
     tmpnames, minifreqs = zip(*list(tmpnames_minifreqs))
     tokfreqs = merge_with(sum, minifreqs)
     toobig = set()
-    backend.save_freqs({k: v for k, v in tokfreqs.items() if k not in toobig})
+    backend.save_freqs({b64decode(k): v for k, v in tokfreqs.items() if k not in toobig})
     del tokfreqs
     tokens = _mergefeatures(tmpnames, toobig)
     for name, ids in tokens:
-        backend.save_token(name, ids)
+        backend.save_token(b64decode(name), ids)
     for tmpname in tmpnames:
         os.remove(tmpname)
     backend.save_featurizer_name(featurizer_name)
+    pool.close()
+    pool.join()
 
 
 class CLI:
